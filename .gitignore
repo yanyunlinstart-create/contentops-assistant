@@ -3,6 +3,7 @@
 !.env.example
 
 *.log
+*.pid
 logs/
 
 *.bak
@@ -17,8 +18,19 @@ dist/
 build/
 data/
 exports/
+tmp/
+temp/
 
 node_modules/
+*.zip
+*.tar
+*.tar.gz
+screenshots/
+
+工作内容助手飞书化-deploy/
+工作内容助手飞书化-release-*/
+*-deploy/
+*-release-*/
 
 .DS_Store
 Thumbs.db

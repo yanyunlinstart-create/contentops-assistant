@@ -7,6 +7,7 @@ const {
 } = require('./contentPrompts');
 
 const FEISHU_BASE_URL = 'https://open.feishu.cn/open-apis';
+const REQUEST_TIMEOUT_MS = Number(process.env.FEISHU_REQUEST_TIMEOUT_MS || 20_000);
 
 let tokenCache = {
   token: '',
@@ -62,6 +63,25 @@ function wait(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+async function fetchWithTimeout(url, options = {}, timeoutMs = REQUEST_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(new Error(`Request timeout after ${timeoutMs}ms`)), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } catch (error) {
+    if (error.name === 'AbortError' || String(error.message || '').includes('timeout')) {
+      const err = new Error(`Request timeout after ${timeoutMs}ms`);
+      err.code = 'REQUEST_TIMEOUT';
+      err.isNetworkError = true;
+      err.cause = error;
+      throw err;
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 function loadDotEnv() {
   const envPath = path.join(__dirname, '.env');
   if (!fs.existsSync(envPath)) return;
@@ -90,7 +110,7 @@ function requireEnv(name) {
 }
 
 async function requestJson(url, options = {}) {
-  const response = await fetch(url, options);
+  const response = await fetchWithTimeout(url, options);
   const text = await response.text();
   let data = {};
 
@@ -100,7 +120,7 @@ async function requestJson(url, options = {}) {
     } catch (error) {
       const err = new Error(`Feishu returned non-JSON response: HTTP ${response.status}`);
       err.status = response.status;
-      err.details = { kind: 'non_json', httpStatus: response.status, bodyBytes: text.length };
+      err.details = text.slice(0, 300);
       throw err;
     }
   }
@@ -108,7 +128,7 @@ async function requestJson(url, options = {}) {
   if (!response.ok) {
     const err = new Error(data.msg || data.message || `Feishu request failed: HTTP ${response.status}`);
     err.status = response.status;
-    err.details = summarizeFeishuResponse(data);
+    err.details = data;
     throw err;
   }
 
@@ -124,7 +144,7 @@ async function requestFeishuJson(label, url, options = {}) {
 
   let response;
   try {
-    response = await fetch(url, options);
+    response = await fetchWithTimeout(url, options);
   } catch (error) {
     const errSummary = summarizeError(error);
     console.log(`[feishu-api] ${label} fetch failed`, {
@@ -150,11 +170,11 @@ async function requestFeishuJson(label, url, options = {}) {
   } catch (error) {
     console.log(`[feishu-api] ${label} non-json response`, {
       httpStatus: response.status,
-      bodyBytes: text.length
+      rawSummary: summarizeSafeText(text)
     });
     const err = new Error(`Feishu returned non-JSON response: HTTP ${response.status}`);
     err.status = response.status;
-    err.details = { kind: 'non_json', httpStatus: response.status, bodyBytes: text.length };
+    err.details = summarizeSafeText(text);
     throw err;
   }
 
@@ -162,6 +182,7 @@ async function requestFeishuJson(label, url, options = {}) {
     httpStatus: response.status,
     code: data.code,
     msg: data.msg || data.message || '',
+    rawSummary: summarizeSafeText(text),
     summary: summarizeFeishuResponse(data)
   });
 
@@ -616,7 +637,7 @@ async function listFeishuTables(appToken, token) {
       nodeVersion: process.version,
       networkError: error.details?.error || null,
       firstAttempt: error.firstAttempt || null,
-      details: summarizeFeishuResponse(error.details || {})
+      raw: error.details || null
     };
     throw err;
   }
@@ -627,7 +648,7 @@ async function listFeishuTables(appToken, token) {
       reason,
       code: data.code,
       msg: data.msg || data.message || '',
-      summary: summarizeFeishuResponse(data)
+      rawSummary: summarizeFeishuResponse(data)
     });
     const err = new Error(`列出数据表失败：${reason}`);
     err.status = 400;
@@ -635,14 +656,18 @@ async function listFeishuTables(appToken, token) {
       reason,
       code: data.code,
       msg: data.msg || data.message || '',
-      summary: summarizeFeishuResponse(data)
+      raw: summarizeFeishuResponse(data)
     };
     throw err;
   }
 
   const tables = normalizeTableListItems(data);
   console.log('[feishu-test] listed tables', {
-    count: tables.length
+    count: tables.length,
+    tables: tables.map(item => ({
+      table_id: item.tableId,
+      name: item.name
+    }))
   });
 
   return tables;
@@ -659,16 +684,23 @@ function matchRequiredTables(requiredTableIds, actualTables) {
       results[name] = matched;
       return;
     }
-    missing.push({ name });
+    missing.push({
+      name,
+      tableId
+    });
   });
 
   if (missing.length) {
-    const missingText = missing.map(item => item.name).join('；');
+    const actual = actualTables.map(item => ({
+      table_id: item.tableId,
+      name: item.name
+    }));
+    const missingText = missing.map(item => `${item.name}: ${item.tableId}`).join('；');
     const err = new Error(`填写的 table_id 不存在：${missingText}`);
     err.status = 400;
     err.details = {
       missing,
-      actualTableCount: actualTables.length,
+      actualTables: actual,
       message: '请确认 4 个 table_id 是否属于当前 app_token 对应的多维表格。'
     };
     throw err;
@@ -742,7 +774,7 @@ async function listBitableRecords(appToken, tableId, token) {
       err.details = {
         code: data.code,
         msg: data.msg || data.message || '',
-        summary: summarizeFeishuResponse(data)
+        raw: summarizeFeishuResponse(data)
       };
       throw err;
     }
@@ -856,6 +888,12 @@ function dailyReportFieldAliasMap() {
     ['\u672a\u53d1\u5e03\u8d26\u53f7\u6570', ['\u672a\u53d1\u5e03\u8d26\u53f7\u6570', '\u672a\u53d1\u5e03']],
     ['\u5b8c\u6210\u7387', ['\u5b8c\u6210\u7387', '\u4eca\u65e5\u5b8c\u6210\u7387']],
     ['\u4eca\u65e5\u6c47\u62a5\u5168\u6587', ['\u4eca\u65e5\u6c47\u62a5\u5168\u6587', '\u6c47\u62a5\u5168\u6587', '\u65e5\u62a5\u5168\u6587']],
+    ['20\u5206\u949f\u5f85\u67e5\u770b\u6570\u91cf', ['20\u5206\u949f\u5f85\u67e5\u770b\u6570\u91cf', 'first20Count']],
+    ['2\u5c0f\u65f60\u6570\u636e\u5f02\u5e38\u6570\u91cf', ['2\u5c0f\u65f60\u6570\u636e\u5f02\u5e38\u6570\u91cf', 'abnormal2hCount']],
+    ['24\u5c0f\u65f6\u5efa\u8bae\u5220\u9664\u6570\u91cf', ['24\u5c0f\u65f6\u5efa\u8bae\u5220\u9664\u6570\u91cf', 'delete24hCount']],
+    ['48\u5c0f\u65f6\u5f3a\u63d0\u9192\u6570\u91cf', ['48\u5c0f\u65f6\u5f3a\u63d0\u9192\u6570\u91cf', 'final48hCount']],
+    ['\u5df2\u5220\u9664\u5e76\u53cd\u9988\u751f\u6210\u6570\u91cf', ['\u5df2\u5220\u9664\u5e76\u53cd\u9988\u751f\u6210\u6570\u91cf', 'deletedFeedbackCount']],
+    ['\u5931\u8d25\u6837\u672c\u65b0\u589e\u6570\u91cf', ['\u5931\u8d25\u6837\u672c\u65b0\u589e\u6570\u91cf', 'newFailureSampleCount']],
     ['\u5f85\u540c\u6b65\u4efb\u52a1\u6570', ['\u5f85\u540c\u6b65\u4efb\u52a1\u6570', '\u5f85\u540c\u6b65']],
     ['\u5931\u8d25\u4efb\u52a1\u6570', ['\u5931\u8d25\u4efb\u52a1\u6570', '\u5931\u8d25\u4efb\u52a1']],
     ['\u6570\u636e\u6cbb\u7406\u72b6\u6001', ['\u6570\u636e\u6cbb\u7406\u72b6\u6001', '\u6570\u636e\u6cbb\u7406']],
@@ -1065,6 +1103,7 @@ function canonicalPublishFieldName(name) {
 
 function publishFieldAliasMap() {
   return new Map([
+    ['\u53d1\u5e03\u8bb0\u5f55ID', ['\u53d1\u5e03\u8bb0\u5f55ID', '\u53d1\u5e03\u8bb0\u5f55 Id', '\u53d1\u5e03\u8bb0\u5f55id', 'publishRecordId', 'publish_record_id', 'id']],
     ['\u53d1\u5e03\u65e5\u671f', ['\u53d1\u5e03\u65e5\u671f', '\u65e5\u671f']],
     ['\u8d26\u53f7\u540d', ['\u8d26\u53f7\u540d', '\u8d26\u53f7', '\u540d\u79f0']],
     ['\u8bbe\u5907\u53f7', ['\u8bbe\u5907\u53f7', '\u8bbe\u5907']],
@@ -1075,7 +1114,11 @@ function publishFieldAliasMap() {
       '\u9009\u9898',
       '\u6807\u9898'
     ]],
+    ['\u5185\u5bb9\u7c7b\u578b', ['\u5185\u5bb9\u7c7b\u578b', '\u53d1\u5e03\u5185\u5bb9\u7c7b\u578b', 'contentType']],
+    ['\u6587\u6848\u6458\u8981', ['\u6587\u6848\u6458\u8981', '\u6807\u9898\u6216\u6587\u6848\u6458\u8981', '\u6458\u8981', 'summary']],
     ['\u53d1\u5e03\u4f53\u88c1', ['\u53d1\u5e03\u4f53\u88c1', '\u4f53\u88c1', '\u7c7b\u578b']],
+    ['\u53d1\u5e03\u65f6\u95f4', ['\u53d1\u5e03\u65f6\u95f4', '\u7cbe\u786e\u53d1\u5e03\u65f6\u95f4', 'publishedAt']],
+    ['\u6570\u636e\u56de\u8bbf\u72b6\u6001', ['\u6570\u636e\u56de\u8bbf\u72b6\u6001', '\u56de\u8bbf\u72b6\u6001', 'dataReviewStatus']],
     ['\u662f\u5426\u8865\u8bb0', ['\u662f\u5426\u8865\u8bb0', '\u8865\u8bb0']],
     ['\u662f\u5426\u5df2\u53d1\u5e03', ['\u662f\u5426\u5df2\u53d1\u5e03', '\u5df2\u53d1\u5e03', '\u662f\u5426\u53d1\u5e03']],
     ['\u662f\u5426\u8425\u9500', ['\u662f\u5426\u8425\u9500', '\u8425\u9500']],
@@ -1085,6 +1128,10 @@ function publishFieldAliasMap() {
       '\u64ad\u653e\u91cf',
       '\u9605\u8bfb\u91cf'
     ]],
+    ['\u70b9\u8d5e', ['\u70b9\u8d5e', '\u70b9\u8d5e\u91cf']],
+    ['\u8bc4\u8bba', ['\u8bc4\u8bba', '\u8bc4\u8bba\u91cf']],
+    ['\u6536\u85cf', ['\u6536\u85cf', '\u6536\u85cf\u91cf']],
+    ['\u5206\u4eab', ['\u5206\u4eab', '\u8f6c\u53d1', '\u5206\u4eab\u91cf']],
     ['\u662f\u5426\u83b7\u5f97\u6fc0\u52b1', ['\u662f\u5426\u83b7\u5f97\u6fc0\u52b1', '\u83b7\u5f97\u6fc0\u52b1', '\u6fc0\u52b1']],
     ['\u5907\u6ce8', ['\u5907\u6ce8', '\u8bf4\u660e']]
   ]);
@@ -1178,14 +1225,19 @@ function getPublishFieldValueByAlias(fields, requestedName, tableFields) {
 
 function getPublishRecordIdentity(fields, tableFields) {
   return {
+    publishRecordId: normalizeFeishuCellValue(getPublishFieldValueByAlias(fields, '\u53d1\u5e03\u8bb0\u5f55ID', tableFields)),
     publishDate: normalizePublishIdentityDay(getPublishFieldValueByAlias(fields, '\u53d1\u5e03\u65e5\u671f', tableFields)),
     accountName: normalizeFeishuCellValue(getPublishFieldValueByAlias(fields, '\u8d26\u53f7\u540d', tableFields)),
-    device: normalizeFeishuCellValue(getPublishFieldValueByAlias(fields, '\u8bbe\u5907\u53f7', tableFields))
+    device: normalizeFeishuCellValue(getPublishFieldValueByAlias(fields, '\u8bbe\u5907\u53f7', tableFields)),
+    contentType: normalizeFeishuCellValue(getPublishFieldValueByAlias(fields, '\u5185\u5bb9\u7c7b\u578b', tableFields)),
+    title: normalizeFeishuCellValue(getPublishFieldValueByAlias(fields, '\u5185\u5bb9\u6807\u9898 / \u9009\u9898', tableFields)),
+    publishedAt: normalizeFeishuCellValue(getPublishFieldValueByAlias(fields, '\u53d1\u5e03\u65f6\u95f4', tableFields))
   };
 }
 
 function isSamePublishIdentity(recordFields, identity, tableFields) {
   const current = getPublishRecordIdentity(recordFields, tableFields);
+  if (identity.publishRecordId) return current.publishRecordId === identity.publishRecordId;
   return current.publishDate === identity.publishDate
     && current.accountName === identity.accountName
     && current.device === identity.device;
@@ -1213,7 +1265,9 @@ function normalizePublishRecordPreview(record, tableFields) {
   const fields = record?.fields || {};
   return {
     record_id: record?.record_id || record?.id || '',
+    publishRecordId: normalizeFeishuCellValue(getPublishFieldValueByAlias(fields, '\u53d1\u5e03\u8bb0\u5f55ID', tableFields)),
     title: normalizeFeishuCellValue(getPublishFieldValueByAlias(fields, '\u5185\u5bb9\u6807\u9898 / \u9009\u9898', tableFields)),
+    contentType: normalizeFeishuCellValue(getPublishFieldValueByAlias(fields, '\u5185\u5bb9\u7c7b\u578b', tableFields)),
     format: normalizeFeishuCellValue(getPublishFieldValueByAlias(fields, '\u53d1\u5e03\u4f53\u88c1', tableFields)),
     isManual: normalizePublishPreviewBool(getPublishFieldValueByAlias(fields, '\u662f\u5426\u8865\u8bb0', tableFields)),
     isPublished: normalizePublishPreviewBool(getPublishFieldValueByAlias(fields, '\u662f\u5426\u5df2\u53d1\u5e03', tableFields)),
@@ -1241,14 +1295,17 @@ async function previewPublishRecordDuplicates(appToken, tableId, token) {
   const groupMap = new Map();
   records.forEach(record => {
     const identity = getPublishRecordIdentity(record?.fields || {}, tableFields);
-    if (!identity.publishDate || !identity.accountName || !identity.device) return;
-    const key = `${identity.publishDate}|${identity.accountName}|${identity.device}`;
+    const hasRecordId = Boolean(identity.publishRecordId);
+    if (!hasRecordId && (!identity.publishDate || !identity.accountName || !identity.device)) return;
+    const key = hasRecordId ? `record:${identity.publishRecordId}` : `legacy:${identity.publishDate}|${identity.accountName}|${identity.device}`;
     if (!groupMap.has(key)) {
       groupMap.set(key, {
         key,
+        publishRecordId: identity.publishRecordId,
         publishDate: identity.publishDate,
         accName: identity.accountName,
         device: identity.device,
+        contentType: identity.contentType,
         records: []
       });
     }
@@ -1461,6 +1518,7 @@ function draftFieldAliasMap() {
     ['\u8d26\u53f7\u540d', ['\u8d26\u53f7\u540d', '\u8d26\u53f7', '\u540d\u79f0']],
     ['\u8bbe\u5907\u53f7', ['\u8bbe\u5907\u53f7', '\u8bbe\u5907']],
     ['\u5185\u5bb9\u65b9\u5411', ['\u5185\u5bb9\u65b9\u5411', '\u65b9\u5411']],
+    ['\u5185\u5bb9\u7c7b\u578b', ['\u5185\u5bb9\u7c7b\u578b', '\u7c7b\u578b', '\u662f\u5426\u8425\u9500', '\u666e\u901a/\u8425\u9500']],
     ['\u9009\u9898', ['\u9009\u9898', '\u5185\u5bb9\u6807\u9898', '\u6807\u9898', '\u5185\u5bb9\u6807\u9898 / \u9009\u9898']],
     ['\u53d1\u5e03\u4f53\u88c1', ['\u53d1\u5e03\u4f53\u88c1', '\u4f53\u88c1', '\u7c7b\u578b']],
     ['\u53e3\u64ad\u811a\u672c', ['\u53e3\u64ad\u811a\u672c', '\u53e3\u64ad', '\u811a\u672c']],
@@ -1471,11 +1529,34 @@ function draftFieldAliasMap() {
     ['\u7d20\u6750\u5173\u952e\u8bcd', ['\u7d20\u6750\u5173\u952e\u8bcd', '\u7d20\u6750', '\u5173\u952e\u8bcd']],
     ['\u6863\u4f4d', ['\u6863\u4f4d', '\u8bc4\u6863']],
     ['\u662f\u5426\u5df2\u4f7f\u7528', ['\u662f\u5426\u5df2\u4f7f\u7528', '\u5df2\u4f7f\u7528', '\u662f\u5426\u4f7f\u7528']],
+    ['\u5f53\u524d\u72b6\u6001', ['\u5f53\u524d\u72b6\u6001', '\u72b6\u6001', '\u53d1\u5e03\u72b6\u6001']],
+    ['\u751f\u6210\u7248\u672c', ['\u751f\u6210\u7248\u672c', 'generationVersion', 'promptVersion', '\u751f\u6210\u89c4\u5219\u7248\u672c', '\u63d0\u793a\u8bcd\u7248\u672c']],
+    ['\u8bc4\u6863\u65e5\u671f', ['\u8bc4\u6863\u65e5\u671f', '\u8bc4\u5206\u65e5\u671f', '\u590d\u76d8\u65e5\u671f']],
+    ['\u4e09\u6863\u5931\u8d25\u539f\u56e0', ['\u4e09\u6863\u5931\u8d25\u539f\u56e0', '\u5931\u8d25\u539f\u56e0', '\u539f\u56e0']],
     ['\u53d1\u5e03\u65f6\u95f4', ['\u53d1\u5e03\u65f6\u95f4', '\u53d1\u5e03\u65e5\u671f']],
+    ['20\u5206\u949f\u68c0\u67e5\u65f6\u95f4', ['20\u5206\u949f\u68c0\u67e5\u65f6\u95f4', '\u9996\u8f6e\u68c0\u67e5\u65f6\u95f4', 'firstCheckAt']],
+    ['20\u5206\u949f\u662f\u5426\u5df2\u67e5\u770b', ['20\u5206\u949f\u662f\u5426\u5df2\u67e5\u770b', '\u9996\u8f6e\u662f\u5426\u5df2\u67e5\u770b', 'firstChecked']],
+    ['20\u5206\u949f0\u6570\u636e\u4fe1\u53f7', ['20\u5206\u949f0\u6570\u636e\u4fe1\u53f7', 'firstCheckZeroData']],
+    ['2\u5c0f\u65f6\u68c0\u67e5\u65f6\u95f4', ['2\u5c0f\u65f6\u68c0\u67e5\u65f6\u95f4', 'abnormalCheckAt']],
+    ['2\u5c0f\u65f60\u6570\u636e\u5f02\u5e38', ['2\u5c0f\u65f60\u6570\u636e\u5f02\u5e38', 'zeroData2h']],
+    ['\u5f02\u5e38\u539f\u56e0', ['\u5f02\u5e38\u539f\u56e0', 'abnormalReason']],
+    ['24\u5c0f\u65f6\u5efa\u8bae\u5220\u9664\u65f6\u95f4', ['24\u5c0f\u65f6\u5efa\u8bae\u5220\u9664\u65f6\u95f4', 'deleteSuggestCheckAt']],
+    ['24\u5c0f\u65f60\u6570\u636e', ['24\u5c0f\u65f60\u6570\u636e', 'zeroData24h']],
+    ['\u662f\u5426\u5efa\u8bae\u5220\u9664', ['\u662f\u5426\u5efa\u8bae\u5220\u9664', 'deleteSuggested']],
+    ['48\u5c0f\u65f6\u5f3a\u63d0\u9192\u65f6\u95f4', ['48\u5c0f\u65f6\u5f3a\u63d0\u9192\u65f6\u95f4', 'finalZeroCheckAt']],
+    ['48\u5c0f\u65f60\u6570\u636e', ['48\u5c0f\u65f60\u6570\u636e', 'zeroData48h']],
+    ['\u5220\u9664\u539f\u56e0', ['\u5220\u9664\u539f\u56e0', 'deleteReason']],
+    ['\u662f\u5426\u53cd\u9988\u751f\u6210', ['\u662f\u5426\u53cd\u9988\u751f\u6210', 'feedbackToGeneration']],
+    ['\u5931\u8d25\u7c7b\u578b', ['\u5931\u8d25\u7c7b\u578b', 'failureType']],
+    ['\u5931\u8d25\u6743\u91cd', ['\u5931\u8d25\u6743\u91cd', 'failureWeight']],
+    ['\u8fd0\u8425\u8bca\u65ad\u89c4\u5219', ['\u8fd0\u8425\u8bca\u65ad\u89c4\u5219', 'operationDiagnosisRule']],
+    ['\u8fd0\u8425\u8bca\u65ad\u5047\u8bbe', ['\u8fd0\u8425\u8bca\u65ad\u5047\u8bbe', 'operationDiagnosisHypothesis']],
+    ['\u8fd0\u8425\u8bca\u65ad\u7f6e\u4fe1\u5ea6', ['\u8fd0\u8425\u8bca\u65ad\u7f6e\u4fe1\u5ea6', 'operationDiagnosisConfidence']],
     ['\u64ad\u653e / \u9605\u8bfb\u91cf', ['\u64ad\u653e / \u9605\u8bfb\u91cf', '\u64ad\u653e/\u9605\u8bfb\u91cf', '\u64ad\u653e\u91cf', '\u9605\u8bfb\u91cf']],
     ['\u70b9\u8d5e', ['\u70b9\u8d5e', '\u70b9\u8d5e\u91cf']],
     ['\u8bc4\u8bba', ['\u8bc4\u8bba', '\u8bc4\u8bba\u91cf']],
     ['\u6536\u85cf', ['\u6536\u85cf', '\u6536\u85cf\u91cf']],
+    ['\u5206\u4eab', ['\u5206\u4eab', '\u8f6c\u53d1', '\u5206\u4eab\u91cf']],
     ['\u590d\u76d8\u5907\u6ce8', ['\u590d\u76d8\u5907\u6ce8', '\u590d\u76d8', '\u5907\u6ce8']]
   ]);
 }
@@ -1516,6 +1597,7 @@ function normalizeDraftRecordFieldsForTable(fields, tableFields) {
 function marketingFieldAliasMap() {
   return new Map([
     ['\u8425\u9500\u53d1\u5e03\u65e5\u671f', ['\u8425\u9500\u53d1\u5e03\u65e5\u671f', '\u53d1\u5e03\u65e5\u671f', '\u8425\u9500\u65e5\u671f']],
+    ['\u53d1\u5e03\u65f6\u95f4', ['\u53d1\u5e03\u65f6\u95f4', '\u7cbe\u786e\u53d1\u5e03\u65f6\u95f4', 'publishedAt']],
     ['\u8d26\u53f7\u540d', ['\u8d26\u53f7\u540d', '\u8d26\u53f7', '\u540d\u79f0']],
     ['\u8bbe\u5907\u53f7', ['\u8bbe\u5907\u53f7', '\u8bbe\u5907']],
     ['\u8425\u9500\u5185\u5bb9\u6807\u9898', ['\u8425\u9500\u5185\u5bb9\u6807\u9898', '\u8425\u9500\u6807\u9898', '\u5185\u5bb9\u6807\u9898', '\u6807\u9898']],
@@ -1524,6 +1606,24 @@ function marketingFieldAliasMap() {
     ['\u662f\u5426\u6307\u5b9a\u8425\u9500\u5185\u5bb9', ['\u662f\u5426\u6307\u5b9a\u8425\u9500\u5185\u5bb9', '\u662f\u5426\u4eba\u5de5\u6307\u5b9a\u8425\u9500\u5185\u5bb9', '\u4eba\u5de5\u6307\u5b9a\u8425\u9500\u5185\u5bb9']],
     ['\u6307\u5b9a\u8425\u9500\u5185\u5bb9', ['\u6307\u5b9a\u8425\u9500\u5185\u5bb9', '\u6307\u5b9a\u8425\u9500\u4efb\u52a1', '\u8425\u9500\u4efb\u52a1\u5907\u6ce8', '\u6307\u5b9a\u8425\u9500\u5907\u6ce8']],
     ['\u5f53\u524d\u72b6\u6001', ['\u5f53\u524d\u72b6\u6001', '\u72b6\u6001']],
+    ['\u64ad\u653e / \u9605\u8bfb\u91cf', ['\u64ad\u653e / \u9605\u8bfb\u91cf', '\u64ad\u653e/\u9605\u8bfb\u91cf', '\u64ad\u653e\u91cf', '\u9605\u8bfb\u91cf']],
+    ['\u70b9\u8d5e', ['\u70b9\u8d5e', '\u70b9\u8d5e\u91cf']],
+    ['\u8bc4\u8bba', ['\u8bc4\u8bba', '\u8bc4\u8bba\u91cf']],
+    ['\u6536\u85cf', ['\u6536\u85cf', '\u6536\u85cf\u91cf']],
+    ['\u5206\u4eab', ['\u5206\u4eab', '\u8f6c\u53d1', '\u5206\u4eab\u91cf']],
+    ['20\u5206\u949f\u68c0\u67e5\u65f6\u95f4', ['20\u5206\u949f\u68c0\u67e5\u65f6\u95f4', 'firstCheckAt']],
+    ['20\u5206\u949f\u662f\u5426\u5df2\u67e5\u770b', ['20\u5206\u949f\u662f\u5426\u5df2\u67e5\u770b', 'firstChecked']],
+    ['2\u5c0f\u65f60\u6570\u636e\u5f02\u5e38', ['2\u5c0f\u65f60\u6570\u636e\u5f02\u5e38', 'zeroData2h']],
+    ['24\u5c0f\u65f60\u6570\u636e', ['24\u5c0f\u65f60\u6570\u636e', 'zeroData24h']],
+    ['\u662f\u5426\u5efa\u8bae\u5220\u9664', ['\u662f\u5426\u5efa\u8bae\u5220\u9664', 'deleteSuggested']],
+    ['48\u5c0f\u65f60\u6570\u636e', ['48\u5c0f\u65f60\u6570\u636e', 'zeroData48h']],
+    ['\u5220\u9664\u539f\u56e0', ['\u5220\u9664\u539f\u56e0', 'deleteReason']],
+    ['\u662f\u5426\u53cd\u9988\u751f\u6210', ['\u662f\u5426\u53cd\u9988\u751f\u6210', 'feedbackToGeneration']],
+    ['\u5931\u8d25\u7c7b\u578b', ['\u5931\u8d25\u7c7b\u578b', 'failureType']],
+    ['\u5931\u8d25\u6743\u91cd', ['\u5931\u8d25\u6743\u91cd', 'failureWeight']],
+    ['\u8fd0\u8425\u8bca\u65ad\u89c4\u5219', ['\u8fd0\u8425\u8bca\u65ad\u89c4\u5219', 'operationDiagnosisRule']],
+    ['\u8fd0\u8425\u8bca\u65ad\u5047\u8bbe', ['\u8fd0\u8425\u8bca\u65ad\u5047\u8bbe', 'operationDiagnosisHypothesis']],
+    ['\u8fd0\u8425\u8bca\u65ad\u7f6e\u4fe1\u5ea6', ['\u8fd0\u8425\u8bca\u65ad\u7f6e\u4fe1\u5ea6', 'operationDiagnosisConfidence']],
     ['\u6765\u6e90', ['\u6765\u6e90', '\u89e6\u53d1\u6765\u6e90']],
     ['\u98ce\u9669\u5907\u6ce8', ['\u98ce\u9669\u5907\u6ce8', '\u5907\u6ce8', '\u98ce\u9669']],
     ['\u521b\u5efa\u65f6\u95f4', ['\u521b\u5efa\u65f6\u95f4', '\u521b\u5efa\u65e5\u671f']]
@@ -1649,7 +1749,7 @@ async function listBitableFields(appToken, tableId, token) {
       err.details = {
         code: data.code,
         msg: data.msg || data.message || '',
-        summary: summarizeFeishuResponse(data)
+        raw: summarizeFeishuResponse(data)
       };
       throw err;
     }
@@ -1696,7 +1796,7 @@ async function createBitableRecord(appToken, tableId, fields, token) {
     err.details = {
       code: data.code,
       msg: data.msg || data.message || '',
-      summary: summarizeFeishuResponse(data)
+      raw: summarizeFeishuResponse(data)
     };
     throw err;
   }
@@ -1720,7 +1820,9 @@ async function createAccountBitableRecord(appToken, tableId, fields, token) {
   console.log('[feishu-accounts] create normalized fields', {
     requestedCount: Object.keys(fields || {}).length,
     sentCount: Object.keys(normalizedFields).length,
-    skippedCount: Math.max(0, Object.keys(fields || {}).length - Object.keys(normalizedFields).length)
+    skippedCount: Math.max(0, Object.keys(fields || {}).length - Object.keys(normalizedFields).length),
+    skippedFields,
+    tableFieldNames: tableFields.map(field => field.field_name || field.name || '').filter(Boolean)
   });
   const data = await requestFeishuJson('account_record_create', url, {
     method: 'POST',
@@ -1739,7 +1841,7 @@ async function createAccountBitableRecord(appToken, tableId, fields, token) {
     err.details = {
       code: data.code,
       msg: data.msg || data.message || '',
-      summary: summarizeFeishuResponse(data)
+      raw: summarizeFeishuResponse(data)
     };
     throw err;
   }
@@ -1766,7 +1868,9 @@ async function updateAccountBitableRecord(appToken, tableId, recordId, fields, t
   console.log('[feishu-accounts] update normalized fields', {
     requestedCount: Object.keys(fields || {}).length,
     sentCount: Object.keys(normalizedFields).length,
-    skippedCount: Math.max(0, Object.keys(fields || {}).length - Object.keys(normalizedFields).length)
+    skippedCount: Math.max(0, Object.keys(fields || {}).length - Object.keys(normalizedFields).length),
+    skippedFields,
+    tableFieldNames: tableFields.map(field => field.field_name || field.name || '').filter(Boolean)
   });
   const data = await requestFeishuJson('account_record_update', url, {
     method: 'PUT',
@@ -1785,7 +1889,7 @@ async function updateAccountBitableRecord(appToken, tableId, recordId, fields, t
     err.details = {
       code: data.code,
       msg: data.msg || data.message || '',
-      summary: summarizeFeishuResponse(data)
+      raw: summarizeFeishuResponse(data)
     };
     throw err;
   }
@@ -1819,7 +1923,7 @@ async function createDailyReportBitableRecord(appToken, tableId, fields, token, 
     err.details = {
       code: data.code,
       msg: data.msg || data.message || '',
-      summary: summarizeFeishuResponse(data)
+      raw: summarizeFeishuResponse(data)
     };
     throw err;
   }
@@ -1853,7 +1957,7 @@ async function updateDailyReportBitableRecord(appToken, tableId, recordId, field
     err.details = {
       code: data.code,
       msg: data.msg || data.message || '',
-      summary: summarizeFeishuResponse(data)
+      raw: summarizeFeishuResponse(data)
     };
     throw err;
   }
@@ -1956,7 +2060,7 @@ async function updatePublishBitableRecord(appToken, tableId, recordId, fields, t
     err.details = {
       code: data.code,
       msg: data.msg || data.message || '',
-      summary: summarizeFeishuResponse(data)
+      raw: summarizeFeishuResponse(data)
     };
     throw err;
   }
@@ -1979,7 +2083,7 @@ async function deletePublishBitableRecord(appToken, tableId, recordId, token) {
     err.details = {
       code: data.code,
       msg: data.msg || data.message || '',
-      summary: summarizeFeishuResponse(data)
+      raw: summarizeFeishuResponse(data)
     };
     throw err;
   }
@@ -1999,7 +2103,7 @@ async function upsertPublishBitableRecord(appToken, tableId, fields, token) {
   }
 
   const identity = getPublishRecordIdentity(fields, tableFields);
-  if (!identity.publishDate || !identity.accountName || !identity.device) {
+  if (!identity.publishRecordId && (!identity.publishDate || !identity.accountName || !identity.device)) {
     const err = new Error('Missing publish record identity: 发布日期 + 账号名 + 设备号');
     err.status = 400;
     err.details = { identity };
@@ -2042,7 +2146,7 @@ async function deletePublishBitableRecordByIdentity(appToken, tableId, fields, t
   }
 
   const identity = getPublishRecordIdentity(fields, tableFields);
-  if (!identity.publishDate || !identity.accountName || !identity.device) {
+  if (!explicitRecordId && !identity.publishRecordId && (!identity.publishDate || !identity.accountName || !identity.device)) {
     const err = new Error('Missing publish record delete identity: 发布日期 + 账号名 + 设备号');
     err.status = 400;
     err.details = { identity };
@@ -2051,6 +2155,7 @@ async function deletePublishBitableRecordByIdentity(appToken, tableId, fields, t
 
   const records = await listBitableRecords(appToken, tableId, token);
   const recordIds = [];
+  if (explicitRecordId) recordIds.push(explicitRecordId);
   records
     .filter(record => isSamePublishIdentity(record?.fields || {}, identity, tableFields))
     .forEach(record => {
@@ -2059,6 +2164,9 @@ async function deletePublishBitableRecordByIdentity(appToken, tableId, fields, t
     });
 
   console.log('[feishu-publish-record] delete identity matches', {
+    accountName: identity.accountName,
+    publishDate: identity.publishDate,
+    device: identity.device,
     explicitRecordIdPresent: Boolean(explicitRecordId),
     matchedCount: recordIds.length
   });
@@ -2086,13 +2194,19 @@ async function deletePublishBitableRecordByIdentity(appToken, tableId, fields, t
       .map(record => record.record_id || record.recordId || record.id || '')
       .filter(Boolean);
     console.log('[feishu-publish-record] delete verification failed', {
+      accountName: identity.accountName,
+      publishDate: identity.publishDate,
+      device: identity.device,
       deletedCount: recordIds.length,
-      remainingCount: remainingRecordIds.length
+      remainingCount: remainingRecordIds.length,
+      remainingRecordIds
     });
     const err = new Error('Publish record delete verification failed: 飞书发布记录仍有残留');
     err.status = 409;
     err.details = {
-      deletedCount: recordIds.length,
+      identity,
+      deletedRecordIds: recordIds,
+      remainingRecordIds,
       remainingCount: remainingRecordIds.length
     };
     throw err;
@@ -2142,7 +2256,7 @@ async function createDraftBitableRecord(appToken, tableId, fields, token) {
     err.details = {
       code: data.code,
       msg: data.msg || data.message || '',
-      summary: summarizeFeishuResponse(data)
+      raw: summarizeFeishuResponse(data)
     };
     throw err;
   }
@@ -2165,7 +2279,7 @@ async function deleteDraftBitableRecord(appToken, tableId, recordId, token) {
     err.details = {
       code: data.code,
       msg: data.msg || data.message || '',
-      summary: summarizeFeishuResponse(data)
+      raw: summarizeFeishuResponse(data)
     };
     throw err;
   }
@@ -2208,7 +2322,7 @@ async function createMarketingBitableRecord(appToken, tableId, fields, token) {
     err.details = {
       code: data.code,
       msg: data.msg || data.message || '',
-      summary: summarizeFeishuResponse(data)
+      raw: summarizeFeishuResponse(data)
     };
     throw err;
   }
@@ -2251,7 +2365,7 @@ async function updateMarketingBitableRecord(appToken, tableId, recordId, fields,
     err.details = {
       code: data.code,
       msg: data.msg || data.message || '',
-      summary: summarizeFeishuResponse(data)
+      raw: summarizeFeishuResponse(data)
     };
     throw err;
   }
@@ -2274,7 +2388,7 @@ async function deleteMarketingBitableRecord(appToken, tableId, recordId, token) 
     err.details = {
       code: data.code,
       msg: data.msg || data.message || '',
-      summary: summarizeFeishuResponse(data)
+      raw: summarizeFeishuResponse(data)
     };
     throw err;
   }
@@ -2358,6 +2472,10 @@ async function deleteMarketingBitableRecordByIdentity(appToken, tableId, fields,
     });
 
   console.log('[feishu-marketing] delete identity matches', {
+    accountName: identity.accountName,
+    postedAt: identity.postedAt,
+    device: identity.device,
+    title: identity.title,
     explicitRecordIdPresent: Boolean(explicitRecordId),
     matchedCount: recordIds.length
   });
@@ -2386,13 +2504,20 @@ async function deleteMarketingBitableRecordByIdentity(appToken, tableId, fields,
       .map(record => record.record_id || record.recordId || record.id || '')
       .filter(Boolean);
     console.log('[feishu-marketing] delete verification failed', {
+      accountName: identity.accountName,
+      postedAt: identity.postedAt,
+      device: identity.device,
+      title: identity.title,
       deletedCount: recordIds.length,
-      remainingCount: remainingRecordIds.length
+      remainingCount: remainingRecordIds.length,
+      remainingRecordIds
     });
     const err = new Error('Marketing record delete verification failed: 飞书营销记录仍有残留');
     err.status = 409;
     err.details = {
-      deletedCount: recordIds.length,
+      identity,
+      deletedRecordIds: recordIds,
+      remainingRecordIds,
       remainingCount: remainingRecordIds.length
     };
     throw err;
@@ -3113,7 +3238,8 @@ const server = http.createServer(async (req, res) => {
       console.log('received account create request', {
         appTokenPresent: Boolean(body?.appToken),
         accountsTableIdPresent: Boolean(tableId),
-        fieldCount: Object.keys(fields || {}).length
+        accountName: fields['账号名'] || '',
+        device: fields['设备号'] || ''
       });
       const result = await handleAccountCreate(body);
       console.log('[feishu-accounts] create result', {
@@ -3145,7 +3271,8 @@ const server = http.createServer(async (req, res) => {
         appTokenPresent: Boolean(body?.appToken),
         accountsTableIdPresent: Boolean(tableId),
         recordIdPresent: Boolean(body?.recordId || body?.record_id || body?.feishuRecordId || body?.feishu_record_id),
-        fieldCount: Object.keys(fields || {}).length
+        accountName: fields['账号名'] || '',
+        device: fields['设备号'] || ''
       });
       const result = await handleAccountUpdate(body);
       console.log('[feishu-accounts] update result', {
@@ -3175,8 +3302,9 @@ const server = http.createServer(async (req, res) => {
       const fields = body?.fields || {};
       console.log('received daily report upsert request', {
         reportsTableIdPresent: Boolean(tableId),
-        fieldCount: Object.keys(fields || {}).length,
-        reportLength: String(Object.values(fields || {}).find(value => typeof value === 'string') || '').length
+        date: fields['日期'] || '',
+        accountSource: fields['账号来源'] || '',
+        reportLength: String(fields['今日汇报全文'] || '').length
       });
       const result = await handleDailyReportUpsert(body);
       console.log('[feishu-daily-report] upsert result', {
@@ -3205,8 +3333,8 @@ const server = http.createServer(async (req, res) => {
       const tableId = body?.tableId || body?.reportsTableId || body?.tables?.reports;
       console.log('received daily report check request', {
         reportsTableIdPresent: Boolean(tableId),
-        datePresent: Boolean(body?.date || body?.day),
-        accountSourcePresent: Boolean(body?.accountSource || body?.source)
+        date: body?.date || body?.day || '',
+        accountSource: body?.accountSource || body?.source || ''
       });
       const result = await handleDailyReportCheck(body);
       console.log('[feishu-daily-report] check result', {
@@ -3237,7 +3365,11 @@ const server = http.createServer(async (req, res) => {
       const fields = body?.fields || {};
       console.log('received publish record upsert request', {
         publishTableIdPresent: Boolean(tableId),
-        fieldCount: Object.keys(fields || {}).length
+        accountName: fields['账号名'] || '',
+        publishDate: fields['发布日期'] || '',
+        device: fields['设备号'] || '',
+        isManual: Boolean(fields['是否补记']),
+        isMarketing: Boolean(fields['是否营销'])
       });
       const result = await handlePublishRecordUpsert(body);
       console.log('[feishu-publish-record] upsert result', {
@@ -3267,7 +3399,9 @@ const server = http.createServer(async (req, res) => {
       console.log('received publish record delete request', {
         publishTableIdPresent: Boolean(tableId),
         recordIdPresent: Boolean(recordId),
-        fieldCount: Object.keys(fields || {}).length
+        accountName: fields['账号名'] || '',
+        publishDate: fields['发布日期'] || '',
+        device: fields['设备号'] || ''
       });
       const result = await handlePublishRecordDelete(body);
       console.log('[feishu-publish-record] delete result', {
@@ -3348,7 +3482,9 @@ const server = http.createServer(async (req, res) => {
       const fields = body?.fields || {};
       console.log('received draft create request', {
         draftsTableIdPresent: Boolean(tableId),
-        fieldCount: Object.keys(fields || {}).length
+        accountName: fields['\u8d26\u53f7\u540d'] || '',
+        topic: fields['\u9009\u9898'] || '',
+        format: fields['\u53d1\u5e03\u4f53\u88c1'] || ''
       });
       const result = await handleDraftCreate(body);
       console.log('[feishu-draft] create result', {
@@ -3402,7 +3538,10 @@ const server = http.createServer(async (req, res) => {
       const fields = body?.fields || {};
       console.log('received marketing record create request', {
         marketingTableIdPresent: Boolean(tableId),
-        fieldCount: Object.keys(fields || {}).length
+        accountName: fields['\u8d26\u53f7\u540d'] || '',
+        title: fields['\u8425\u9500\u5185\u5bb9\u6807\u9898'] || '',
+        postedAt: fields['\u8425\u9500\u53d1\u5e03\u65e5\u671f'] || '',
+        deleteReminderAt: fields['\u5220\u9664\u63d0\u9192\u65e5\u671f'] || ''
       });
       const result = await handleMarketingRecordCreate(body);
       console.log('[feishu-marketing] create result', {
@@ -3431,7 +3570,8 @@ const server = http.createServer(async (req, res) => {
       console.log('received marketing record update request', {
         marketingTableIdPresent: Boolean(tableId),
         recordIdPresent: Boolean(recordId),
-        fieldCount: Object.keys(fields || {}).length
+        status: fields['\u5f53\u524d\u72b6\u6001'] || '',
+        isDeleted: fields['\u662f\u5426\u5df2\u5220\u9664'] ?? ''
       });
       const result = await handleMarketingRecordUpdate(body);
       console.log('[feishu-marketing] update result', {
@@ -3460,7 +3600,9 @@ const server = http.createServer(async (req, res) => {
       console.log('received marketing record delete request', {
         marketingTableIdPresent: Boolean(tableId),
         recordIdPresent: Boolean(recordId),
-        fieldCount: Object.keys(fields || {}).length
+        accountName: fields['账号名'] || '',
+        title: fields['营销内容标题'] || '',
+        postedAt: fields['营销发布日期'] || ''
       });
       const result = await handleMarketingRecordDelete(body);
       console.log('[feishu-marketing] delete result', {
@@ -3488,6 +3630,37 @@ const server = http.createServer(async (req, res) => {
   });
 });
 
+server.requestTimeout = Number(process.env.LOCAL_SERVER_REQUEST_TIMEOUT_MS || 60_000);
+server.headersTimeout = Number(process.env.LOCAL_SERVER_HEADERS_TIMEOUT_MS || 65_000);
+
+server.on('error', error => {
+  console.error('[server] failed to start or listen', {
+    port: PORT,
+    code: error.code || '',
+    message: error.message || String(error),
+    hint: error.code === 'EADDRINUSE'
+      ? `Port ${PORT} is already in use. Close the old backend process or start with another PORT.`
+      : 'Check environment variables, permissions, and recent logs.'
+  });
+  process.exitCode = 1;
+});
+
+process.on('unhandledRejection', reason => {
+  console.error('[server] unhandled rejection', summarizeError(reason instanceof Error ? reason : new Error(String(reason))));
+});
+
+process.on('uncaughtException', error => {
+  console.error('[server] uncaught exception', summarizeError(error));
+  process.exitCode = 1;
+});
+
 server.listen(PORT, () => {
-  console.log(`Feishu local sync test server listening on http://localhost:${PORT}`);
+  console.log(`Feishu local sync test server listening on http://localhost:${PORT}`, {
+    port: PORT,
+    requestTimeoutMs: server.requestTimeout,
+    feishuRequestTimeoutMs: REQUEST_TIMEOUT_MS,
+    hasFeishuAppId: Boolean(process.env.FEISHU_APP_ID),
+    hasFeishuAppSecret: Boolean(process.env.FEISHU_APP_SECRET),
+    nodeVersion: process.version
+  });
 });
