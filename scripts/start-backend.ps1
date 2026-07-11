@@ -20,6 +20,33 @@ function Test-BackendHealth {
   }
 }
 
+function Get-PortOwnerPid {
+  try {
+    $connection = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($connection) {
+      return [int]$connection.OwningProcess
+    }
+  } catch {
+  }
+  return $null
+}
+
+function Test-BackendNodeProcess {
+  param([int]$ProcessId)
+
+  $process = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
+  if (!$process -or $process.ProcessName -notlike "node*") {
+    return $false
+  }
+
+  try {
+    $cim = Get-CimInstance Win32_Process -Filter "ProcessId = $ProcessId" -ErrorAction SilentlyContinue
+    return [string]$cim.CommandLine -match "server\.js"
+  } catch {
+    return $true
+  }
+}
+
 function Get-BackendPid {
   if (!(Test-Path $PidFile)) {
     return $null
@@ -38,16 +65,23 @@ function Get-BackendPid {
   return $null
 }
 
-function Stop-TrackedBackend {
-  $trackedPid = Get-BackendPid
-  if (!$trackedPid) {
+function Stop-BackendPid {
+  param([int]$ProcessId)
+
+  if (!$ProcessId) {
     return
   }
 
-  $process = Get-Process -Id $trackedPid -ErrorAction SilentlyContinue
-  if ($process -and $process.ProcessName -like "node*") {
-    Stop-Process -Id $trackedPid -Force
+  if (Test-BackendNodeProcess -ProcessId $ProcessId) {
+    Stop-Process -Id $ProcessId -Force
     Start-Sleep -Milliseconds 400
+  }
+}
+
+function Stop-TrackedBackend {
+  $trackedPid = Get-BackendPid
+  if ($trackedPid) {
+    Stop-BackendPid -ProcessId $trackedPid
   }
 
   Remove-Item -LiteralPath $PidFile -Force -ErrorAction SilentlyContinue
@@ -55,10 +89,22 @@ function Stop-TrackedBackend {
 
 if ($Restart) {
   Stop-TrackedBackend
+  $portOwnerPid = Get-PortOwnerPid
+  if ($portOwnerPid) {
+    if (Test-BackendNodeProcess -ProcessId $portOwnerPid) {
+      Stop-BackendPid -ProcessId $portOwnerPid
+    } else {
+      throw "Port $Port is already in use by process $portOwnerPid, and it does not look like this backend."
+    }
+  }
 } elseif (Test-BackendHealth) {
   $trackedPid = Get-BackendPid
-  if ($trackedPid) {
-    Write-Host "Backend is already running on $HealthUrl (pid $trackedPid)."
+  $portOwnerPid = Get-PortOwnerPid
+  if ($portOwnerPid -and (Test-BackendNodeProcess -ProcessId $portOwnerPid)) {
+    Set-Content -LiteralPath $PidFile -Value $portOwnerPid -Encoding ascii
+    Write-Host "Backend is already running on $HealthUrl (pid $portOwnerPid)."
+  } elseif ($trackedPid) {
+    Write-Host "Backend is already responding on $HealthUrl, but the listening process could not be verified (tracked pid $trackedPid)."
   } else {
     Write-Host "Backend is already responding on $HealthUrl."
   }
@@ -89,8 +135,12 @@ Set-Content -LiteralPath $PidFile -Value $process.Id -Encoding ascii
 $healthy = $false
 for ($i = 0; $i -lt 12; $i += 1) {
   Start-Sleep -Milliseconds 500
-  if (Test-BackendHealth) {
+  $portOwnerPid = Get-PortOwnerPid
+  if ((Test-BackendHealth) -and $portOwnerPid -eq $process.Id) {
     $healthy = $true
+    break
+  }
+  if ($process.HasExited) {
     break
   }
 }

@@ -10,7 +10,10 @@
     "backend:restart": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-backend.ps1 -Restart",
     "backend:status": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/status-backend.ps1",
     "backend:stop": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/stop-backend.ps1",
-    "test": "node contentRules.test.js && node postPublishFollowup.test.js"
+    "doctor": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/doctor.ps1",
+    "test": "node scripts/run-tests.js",
+    "verify": "node scripts/verify.js",
+    "public:check": "node scripts/build-public-index.js --check index.html"
   },
   "dependencies": {},
   "engines": {
