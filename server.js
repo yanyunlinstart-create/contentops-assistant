@@ -1,4 +1,4 @@
-const http = require('http');
+﻿const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const {
@@ -7,6 +7,7 @@ const {
 } = require('./contentPrompts');
 
 const FEISHU_BASE_URL = 'https://open.feishu.cn/open-apis';
+loadDotEnv();
 const REQUEST_TIMEOUT_MS = Number(process.env.FEISHU_REQUEST_TIMEOUT_MS || 20_000);
 
 let tokenCache = {
@@ -14,7 +15,6 @@ let tokenCache = {
   expiresAt: 0
 };
 
-loadDotEnv();
 const PORT = Number(process.env.PORT || 3000);
 
 function summarizeText(text, limit = 500) {
@@ -118,7 +118,7 @@ async function requestJson(url, options = {}) {
     try {
       data = JSON.parse(text);
     } catch (error) {
-      const err = new Error(`Feishu returned non-JSON response: HTTP ${response.status}`);
+      const err = new Error(`飞书返回了非 JSON 响应：HTTP ${response.status}`);
       err.status = response.status;
       err.details = text.slice(0, 300);
       throw err;
@@ -126,7 +126,7 @@ async function requestJson(url, options = {}) {
   }
 
   if (!response.ok) {
-    const err = new Error(data.msg || data.message || `Feishu request failed: HTTP ${response.status}`);
+    const err = new Error(data.msg || data.message || `飞书请求失败：HTTP ${response.status}`);
     err.status = response.status;
     err.details = data;
     throw err;
@@ -152,11 +152,11 @@ async function requestFeishuJson(label, url, options = {}) {
       nodeVersion: process.version,
       error: errSummary
     });
-    const err = new Error(error.message || 'fetch failed');
+    const err = new Error(error.message || '飞书网络请求失败');
     err.isNetworkError = true;
     err.details = {
       kind: 'network',
-      url,
+      url: redactFeishuUrl(url),
       nodeVersion: process.version,
       error: errSummary
     };
@@ -172,7 +172,7 @@ async function requestFeishuJson(label, url, options = {}) {
       httpStatus: response.status,
       rawSummary: summarizeSafeText(text)
     });
-    const err = new Error(`Feishu returned non-JSON response: HTTP ${response.status}`);
+    const err = new Error(`飞书返回了非 JSON 响应：HTTP ${response.status}`);
     err.status = response.status;
     err.details = summarizeSafeText(text);
     throw err;
@@ -187,7 +187,7 @@ async function requestFeishuJson(label, url, options = {}) {
   });
 
   if (!response.ok) {
-    const err = new Error(data.msg || data.message || `Feishu request failed: HTTP ${response.status}`);
+    const err = new Error(data.msg || data.message || `飞书请求失败：HTTP ${response.status}`);
     err.status = response.status;
     err.details = data;
     throw err;
@@ -235,7 +235,7 @@ async function getTenantAccessToken() {
   });
 
   if (data.code !== 0 || !data.tenant_access_token) {
-    const err = new Error(data.msg || 'Failed to get tenant_access_token');
+    const err = new Error(data.msg || '获取飞书 tenant_access_token 失败');
     err.details = data;
     throw err;
   }
@@ -257,20 +257,22 @@ function validateTestPayload(body) {
     drafts: String(tables.drafts || '').trim(),
     marketing: String(tables.marketing || '').trim()
   };
+  const reportsTableId = String(tables.reports || '').trim();
 
   if (!appToken) {
-    const err = new Error('Missing appToken');
+    const err = new Error('缺少飞书 app_token');
     err.status = 400;
     throw err;
   }
 
   Object.entries(tableIds).forEach(([name, value]) => {
     if (!value) {
-      const err = new Error(`Missing table id: ${name}`);
+      const err = new Error(`缺少飞书表 table_id：${name}`);
       err.status = 400;
       throw err;
     }
   });
+  if (reportsTableId) tableIds.reports = reportsTableId;
 
   return { appToken, tableIds };
 }
@@ -280,13 +282,13 @@ function validateAccountsListPayload(body) {
   const tableId = String(body?.tableId || body?.accountsTableId || body?.tables?.accounts || '').trim();
 
   if (!appToken) {
-    const err = new Error('Missing appToken');
+    const err = new Error('缺少飞书 app_token');
     err.status = 400;
     throw err;
   }
 
   if (!tableId) {
-    const err = new Error('Missing accounts tableId');
+    const err = new Error('缺少账号表 table_id');
     err.status = 400;
     throw err;
   }
@@ -299,7 +301,7 @@ function validateAccountsCreatePayload(body) {
   const fields = body?.fields;
 
   if (!fields || typeof fields !== 'object' || Array.isArray(fields)) {
-    const err = new Error('Missing account fields');
+    const err = new Error('缺少账号字段');
     err.status = 400;
     throw err;
   }
@@ -313,13 +315,13 @@ function validateAccountsUpdatePayload(body) {
   const fields = body?.fields;
 
   if (!recordId) {
-    const err = new Error('Missing account recordId');
+    const err = new Error('缺少飞书账号表 record_id');
     err.status = 400;
     throw err;
   }
 
   if (!fields || typeof fields !== 'object' || Array.isArray(fields)) {
-    const err = new Error('Missing account fields');
+    const err = new Error('缺少账号字段');
     err.status = 400;
     throw err;
   }
@@ -333,19 +335,19 @@ function validatePublishRecordCreatePayload(body) {
   const fields = body?.fields;
 
   if (!appToken) {
-    const err = new Error('Missing appToken');
+    const err = new Error('缺少飞书 app_token');
     err.status = 400;
     throw err;
   }
 
   if (!tableId) {
-    const err = new Error('Missing publish tableId');
+    const err = new Error('缺少发布记录表 table_id');
     err.status = 400;
     throw err;
   }
 
   if (!fields || typeof fields !== 'object' || Array.isArray(fields)) {
-    const err = new Error('Missing publish record fields');
+    const err = new Error('缺少发布记录字段');
     err.status = 400;
     throw err;
   }
@@ -365,19 +367,19 @@ function validateDailyReportUpsertPayload(body) {
   const fields = body?.fields;
 
   if (!appToken) {
-    const err = new Error('Missing appToken');
+    const err = new Error('缺少飞书 app_token');
     err.status = 400;
     throw err;
   }
 
   if (!tableId) {
-    const err = new Error('Missing daily reports tableId');
+    const err = new Error('缺少日报表 table_id');
     err.status = 400;
     throw err;
   }
 
   if (!fields || typeof fields !== 'object' || Array.isArray(fields)) {
-    const err = new Error('Missing daily report fields');
+    const err = new Error('缺少日报字段');
     err.status = 400;
     throw err;
   }
@@ -392,25 +394,25 @@ function validateDailyReportCheckPayload(body) {
   const accountSource = normalizeFeishuCellValue(body?.accountSource || body?.source || '');
 
   if (!appToken) {
-    const err = new Error('Missing appToken');
+    const err = new Error('缺少飞书 app_token');
     err.status = 400;
     throw err;
   }
 
   if (!tableId) {
-    const err = new Error('Missing daily reports tableId');
+    const err = new Error('缺少日报表 table_id');
     err.status = 400;
     throw err;
   }
 
   if (!date) {
-    const err = new Error('Missing daily report date');
+    const err = new Error('缺少日报日期');
     err.status = 400;
     throw err;
   }
 
   if (!accountSource) {
-    const err = new Error('Missing daily report accountSource');
+    const err = new Error('缺少日报账号来源');
     err.status = 400;
     throw err;
   }
@@ -423,13 +425,13 @@ function validatePublishDuplicatePreviewPayload(body) {
   const tableId = String(body?.tableId || body?.publishTableId || body?.tables?.publish || '').trim();
 
   if (!appToken) {
-    const err = new Error('Missing appToken');
+    const err = new Error('缺少飞书 app_token');
     err.status = 400;
     throw err;
   }
 
   if (!tableId) {
-    const err = new Error('Missing publish tableId');
+    const err = new Error('缺少发布记录表 table_id');
     err.status = 400;
     throw err;
   }
@@ -443,19 +445,19 @@ function validateDraftCreatePayload(body) {
   const fields = body?.fields;
 
   if (!appToken) {
-    const err = new Error('Missing appToken');
+    const err = new Error('缺少飞书 app_token');
     err.status = 400;
     throw err;
   }
 
   if (!tableId) {
-    const err = new Error('Missing drafts tableId');
+    const err = new Error('缺少文案库表 table_id');
     err.status = 400;
     throw err;
   }
 
   if (!fields || typeof fields !== 'object' || Array.isArray(fields)) {
-    const err = new Error('Missing draft fields');
+    const err = new Error('缺少文案字段');
     err.status = 400;
     throw err;
   }
@@ -469,19 +471,19 @@ function validateDraftDeletePayload(body) {
   const recordId = String(body?.recordId || body?.record_id || body?.draftRecordId || body?.draft_record_id || '').trim();
 
   if (!appToken) {
-    const err = new Error('Missing appToken');
+    const err = new Error('缺少飞书 app_token');
     err.status = 400;
     throw err;
   }
 
   if (!tableId) {
-    const err = new Error('Missing drafts tableId');
+    const err = new Error('缺少文案库表 table_id');
     err.status = 400;
     throw err;
   }
 
   if (!recordId) {
-    const err = new Error('Missing draft recordId');
+    const err = new Error('缺少飞书文案库 record_id');
     err.status = 400;
     throw err;
   }
@@ -495,19 +497,19 @@ function validateMarketingRecordCreatePayload(body) {
   const fields = body?.fields;
 
   if (!appToken) {
-    const err = new Error('Missing appToken');
+    const err = new Error('缺少飞书 app_token');
     err.status = 400;
     throw err;
   }
 
   if (!tableId) {
-    const err = new Error('Missing marketing tableId');
+    const err = new Error('缺少营销记录表 table_id');
     err.status = 400;
     throw err;
   }
 
   if (!fields || typeof fields !== 'object' || Array.isArray(fields)) {
-    const err = new Error('Missing marketing record fields');
+    const err = new Error('缺少营销记录字段');
     err.status = 400;
     throw err;
   }
@@ -532,19 +534,19 @@ function validateMarketingRecordUpdatePayload(body) {
   const fields = body?.fields;
 
   if (!appToken) {
-    const err = new Error('Missing appToken');
+    const err = new Error('缺少飞书 app_token');
     err.status = 400;
     throw err;
   }
 
   if (!tableId) {
-    const err = new Error('Missing marketing tableId');
+    const err = new Error('缺少营销记录表 table_id');
     err.status = 400;
     throw err;
   }
 
   if (!fields || typeof fields !== 'object' || Array.isArray(fields)) {
-    const err = new Error('Missing marketing record fields');
+    const err = new Error('缺少营销记录字段');
     err.status = 400;
     throw err;
   }
@@ -709,6 +711,107 @@ function matchRequiredTables(requiredTableIds, actualTables) {
   return results;
 }
 
+const FEISHU_TABLE_FIELD_PROFILES = {
+  accounts: {
+    required: ['账号名', '设备号'],
+    recommended: ['内容方向', '分组', '是否禁言', '备注'],
+    optional: ['是否指定营销账号', '指定营销内容']
+  },
+  publish: {
+    required: ['发布日期', '账号名', '设备号'],
+    recommended: ['发布记录ID', '内容标题 / 选题', '内容类型', '发布体裁', '是否补记', '是否营销', '本地文案ID', '本地营销记录ID', '发布状态', '播放 / 阅读量', '是否获得激励', '备注']
+  },
+  drafts: {
+    required: ['本地文案ID', '账号名', '设备号', '选题'],
+    recommended: ['发布体裁', '内容类型', '文案正文', '创建时间', '发布状态', '备注']
+  },
+  marketing: {
+    required: ['本地营销记录ID', '营销发布日期', '账号名', '设备号', '营销内容标题'],
+    recommended: ['当前状态', '是否已删除', '删除提醒日期', '删除备注', '营销内容正文', '备注'],
+    optional: ['删除完成日期']
+  },
+  reports: {
+    required: ['日期', '账号来源', '今日汇报全文'],
+    recommended: ['创建时间'],
+    optional: ['更新时间']
+  }
+};
+
+function normalizeBitableFieldName(field) {
+  return String(field?.field_name || field?.name || field || '').trim();
+}
+
+function getFeishuAuditFieldAliases(role, name) {
+  if (role === 'accounts') return accountFieldAliasMap().get(name) || [name];
+  if (role === 'publish') return publishFieldAliasMap().get(name) || [name];
+  if (role === 'drafts') return draftFieldAliasMap().get(name) || [name];
+  if (role === 'marketing') return marketingFieldAliasMap().get(name) || [name];
+  if (role === 'reports') return dailyReportFieldAliasMap().get(name) || [name];
+  return [name];
+}
+
+function hasFeishuAuditField(fieldSet, canonicalFieldSet, role, name) {
+  return getFeishuAuditFieldAliases(role, name).some(alias => (
+    fieldSet.has(alias) || canonicalFieldSet.has(canonicalPublishFieldName(alias))
+  ));
+}
+
+function buildFeishuFieldAudit(role, table, tableFields) {
+  const profile = FEISHU_TABLE_FIELD_PROFILES[role] || { required: [], recommended: [], optional: [] };
+  const fieldNames = (Array.isArray(tableFields) ? tableFields : [])
+    .map(normalizeBitableFieldName)
+    .filter(Boolean);
+  const fieldSet = new Set(fieldNames);
+  const canonicalFieldSet = new Set(fieldNames.map(canonicalPublishFieldName));
+  const missingRequired = profile.required.filter(name => !hasFeishuAuditField(fieldSet, canonicalFieldSet, role, name));
+  const missingRecommended = profile.recommended.filter(name => !hasFeishuAuditField(fieldSet, canonicalFieldSet, role, name));
+  const missingOptional = (profile.optional || []).filter(name => !hasFeishuAuditField(fieldSet, canonicalFieldSet, role, name));
+  const status = missingRequired.length ? 'error' : (missingRecommended.length ? 'warn' : (missingOptional.length ? 'notice' : 'ok'));
+
+  return {
+    role,
+    tableId: table?.tableId || table?.table_id || '',
+    name: table?.name || '',
+    status,
+    fieldCount: fieldNames.length,
+    requiredFields: profile.required,
+    recommendedFields: profile.recommended,
+    optionalFields: profile.optional || [],
+    missingRequired,
+    missingRecommended,
+    missingOptional,
+    availableFields: fieldNames
+  };
+}
+
+async function auditFeishuTableFields(tableResults, appToken, token) {
+  const audits = {};
+  for (const [role, table] of Object.entries(tableResults || {})) {
+    try {
+      const fields = await listBitableFields(appToken, table.tableId, token);
+      audits[role] = buildFeishuFieldAudit(role, table, fields);
+    } catch (error) {
+      audits[role] = {
+        role,
+        tableId: table?.tableId || '',
+        name: table?.name || '',
+        status: 'error',
+        fieldCount: 0,
+        requiredFields: FEISHU_TABLE_FIELD_PROFILES[role]?.required || [],
+        recommendedFields: FEISHU_TABLE_FIELD_PROFILES[role]?.recommended || [],
+        optionalFields: FEISHU_TABLE_FIELD_PROFILES[role]?.optional || [],
+        missingRequired: FEISHU_TABLE_FIELD_PROFILES[role]?.required || [],
+        missingRecommended: FEISHU_TABLE_FIELD_PROFILES[role]?.recommended || [],
+        missingOptional: FEISHU_TABLE_FIELD_PROFILES[role]?.optional || [],
+        availableFields: [],
+        message: error.message || '读取表字段失败',
+        details: error.details || null
+      };
+    }
+  }
+  return audits;
+}
+
 function normalizeFeishuCellValue(value) {
   if (value === null || value === undefined) return '';
   if (typeof value === 'string' || typeof value === 'number') return String(value).trim();
@@ -769,7 +872,7 @@ async function listBitableRecords(appToken, tableId, token) {
     });
 
     if (data.code !== 0) {
-      const err = new Error(data.msg || 'Failed to list accounts records');
+      const err = new Error(data.msg || '读取飞书记录失败');
       err.status = 400;
       err.details = {
         code: data.code,
@@ -888,16 +991,19 @@ function dailyReportFieldAliasMap() {
     ['\u672a\u53d1\u5e03\u8d26\u53f7\u6570', ['\u672a\u53d1\u5e03\u8d26\u53f7\u6570', '\u672a\u53d1\u5e03']],
     ['\u5b8c\u6210\u7387', ['\u5b8c\u6210\u7387', '\u4eca\u65e5\u5b8c\u6210\u7387']],
     ['\u4eca\u65e5\u6c47\u62a5\u5168\u6587', ['\u4eca\u65e5\u6c47\u62a5\u5168\u6587', '\u6c47\u62a5\u5168\u6587', '\u65e5\u62a5\u5168\u6587']],
+    ['\u903e\u671f\u5f85\u8865\u5f55\u6570\u91cf', ['\u903e\u671f\u5f85\u8865\u5f55\u6570\u91cf', 'missedReviewCount']],
     ['20\u5206\u949f\u5f85\u67e5\u770b\u6570\u91cf', ['20\u5206\u949f\u5f85\u67e5\u770b\u6570\u91cf', 'first20Count']],
     ['2\u5c0f\u65f60\u6570\u636e\u5f02\u5e38\u6570\u91cf', ['2\u5c0f\u65f60\u6570\u636e\u5f02\u5e38\u6570\u91cf', 'abnormal2hCount']],
     ['24\u5c0f\u65f6\u5efa\u8bae\u5220\u9664\u6570\u91cf', ['24\u5c0f\u65f6\u5efa\u8bae\u5220\u9664\u6570\u91cf', 'delete24hCount']],
     ['48\u5c0f\u65f6\u5f3a\u63d0\u9192\u6570\u91cf', ['48\u5c0f\u65f6\u5f3a\u63d0\u9192\u6570\u91cf', 'final48hCount']],
+    ['\u5386\u53f2\u672a\u8865\u5f55\u5f52\u6863\u6570\u91cf', ['\u5386\u53f2\u672a\u8865\u5f55\u5f52\u6863\u6570\u91cf', 'historicalUnfilledCount']],
     ['\u5df2\u5220\u9664\u5e76\u53cd\u9988\u751f\u6210\u6570\u91cf', ['\u5df2\u5220\u9664\u5e76\u53cd\u9988\u751f\u6210\u6570\u91cf', 'deletedFeedbackCount']],
     ['\u5931\u8d25\u6837\u672c\u65b0\u589e\u6570\u91cf', ['\u5931\u8d25\u6837\u672c\u65b0\u589e\u6570\u91cf', 'newFailureSampleCount']],
     ['\u5f85\u540c\u6b65\u4efb\u52a1\u6570', ['\u5f85\u540c\u6b65\u4efb\u52a1\u6570', '\u5f85\u540c\u6b65']],
     ['\u5931\u8d25\u4efb\u52a1\u6570', ['\u5931\u8d25\u4efb\u52a1\u6570', '\u5931\u8d25\u4efb\u52a1']],
     ['\u6570\u636e\u6cbb\u7406\u72b6\u6001', ['\u6570\u636e\u6cbb\u7406\u72b6\u6001', '\u6570\u636e\u6cbb\u7406']],
     ['\u521b\u5efa\u65f6\u95f4', ['\u521b\u5efa\u65f6\u95f4', '\u751f\u6210\u65f6\u95f4']],
+    ['\u66f4\u65b0\u65f6\u95f4', ['\u66f4\u65b0\u65f6\u95f4', '\u6700\u540e\u66f4\u65b0\u65f6\u95f4', '\u4fee\u6539\u65f6\u95f4', '\u66f4\u65b0\u65e5\u671f', 'updatedAt']],
     ['\u6765\u6e90', ['\u6765\u6e90', '\u6c47\u62a5\u6765\u6e90']]
   ]);
 }
@@ -1068,7 +1174,8 @@ function normalizePublishFieldValueByType(value, fieldType) {
   if (fieldType === 5) {
     const day = String(value || '').trim();
     if (/^\d{4}-\d{2}-\d{2}$/.test(day)) return new Date(`${day}T00:00:00+08:00`).getTime();
-    return value;
+    const time = new Date(value).getTime();
+    return Number.isFinite(time) ? time : value;
   }
 
   if (fieldType === 2) {
@@ -1103,7 +1210,7 @@ function canonicalPublishFieldName(name) {
 
 function publishFieldAliasMap() {
   return new Map([
-    ['\u53d1\u5e03\u8bb0\u5f55ID', ['\u53d1\u5e03\u8bb0\u5f55ID', '\u53d1\u5e03\u8bb0\u5f55 Id', '\u53d1\u5e03\u8bb0\u5f55id', 'publishRecordId', 'publish_record_id', 'id']],
+    ['\u53d1\u5e03\u8bb0\u5f55ID', ['\u53d1\u5e03\u8bb0\u5f55ID', '\u53d1\u5e03\u8bb0\u5f55 Id', '\u53d1\u5e03\u8bb0\u5f55id', '\u672c\u5730\u53d1\u5e03\u8bb0\u5f55ID', '\u53d1\u5e03ID', '\u8bb0\u5f55ID', 'publishRecordId', 'publish_record_id', 'id']],
     ['\u53d1\u5e03\u65e5\u671f', ['\u53d1\u5e03\u65e5\u671f', '\u65e5\u671f']],
     ['\u8d26\u53f7\u540d', ['\u8d26\u53f7\u540d', '\u8d26\u53f7', '\u540d\u79f0']],
     ['\u8bbe\u5907\u53f7', ['\u8bbe\u5907\u53f7', '\u8bbe\u5907']],
@@ -1114,13 +1221,16 @@ function publishFieldAliasMap() {
       '\u9009\u9898',
       '\u6807\u9898'
     ]],
-    ['\u5185\u5bb9\u7c7b\u578b', ['\u5185\u5bb9\u7c7b\u578b', '\u53d1\u5e03\u5185\u5bb9\u7c7b\u578b', 'contentType']],
+    ['\u5185\u5bb9\u7c7b\u578b', ['\u5185\u5bb9\u7c7b\u578b', '\u53d1\u5e03\u5185\u5bb9\u7c7b\u578b', '\u5185\u5bb9\u65b9\u5411', '\u53d1\u5e03\u7c7b\u578b', '\u7c7b\u578b', '\u662f\u5426\u8425\u9500', '\u8425\u9500', '\u666e\u901a/\u8425\u9500', 'contentType']],
     ['\u6587\u6848\u6458\u8981', ['\u6587\u6848\u6458\u8981', '\u6807\u9898\u6216\u6587\u6848\u6458\u8981', '\u6458\u8981', 'summary']],
     ['\u53d1\u5e03\u4f53\u88c1', ['\u53d1\u5e03\u4f53\u88c1', '\u4f53\u88c1', '\u7c7b\u578b']],
     ['\u53d1\u5e03\u65f6\u95f4', ['\u53d1\u5e03\u65f6\u95f4', '\u7cbe\u786e\u53d1\u5e03\u65f6\u95f4', 'publishedAt']],
     ['\u6570\u636e\u56de\u8bbf\u72b6\u6001', ['\u6570\u636e\u56de\u8bbf\u72b6\u6001', '\u56de\u8bbf\u72b6\u6001', 'dataReviewStatus']],
     ['\u662f\u5426\u8865\u8bb0', ['\u662f\u5426\u8865\u8bb0', '\u8865\u8bb0']],
     ['\u662f\u5426\u5df2\u53d1\u5e03', ['\u662f\u5426\u5df2\u53d1\u5e03', '\u5df2\u53d1\u5e03', '\u662f\u5426\u53d1\u5e03']],
+    ['\u672c\u5730\u6587\u6848ID', ['\u672c\u5730\u6587\u6848ID', '\u6587\u6848ID', '\u8349\u7a3fID', 'draftId', 'localDraftId']],
+    ['\u672c\u5730\u8425\u9500\u8bb0\u5f55ID', ['\u672c\u5730\u8425\u9500\u8bb0\u5f55ID', '\u8425\u9500\u8bb0\u5f55ID', '\u8425\u9500ID', 'marketingRecordId', 'localMarketingId']],
+    ['\u53d1\u5e03\u72b6\u6001', ['\u53d1\u5e03\u72b6\u6001', '\u5f53\u524d\u72b6\u6001', '\u72b6\u6001', '\u662f\u5426\u5df2\u53d1\u5e03', '\u5df2\u53d1\u5e03', '\u662f\u5426\u53d1\u5e03']],
     ['\u662f\u5426\u8425\u9500', ['\u662f\u5426\u8425\u9500', '\u8425\u9500']],
     ['\u64ad\u653e / \u9605\u8bfb\u91cf', [
       '\u64ad\u653e / \u9605\u8bfb\u91cf',
@@ -1172,6 +1282,24 @@ function normalizePublishRecordFieldsForTable(fields, tableFields) {
 
 function getBitableRecordId(data, fallback = '') {
   return data?.data?.record?.record_id || data?.data?.record_id || fallback || '';
+}
+
+function assertNormalizedFieldsNotEmpty(context, fields, normalizedFields, tableFields) {
+  const requestedFields = Object.keys(fields || {});
+  const sentFields = Object.keys(normalizedFields || {});
+  const availableFields = (Array.isArray(tableFields) ? tableFields : [])
+    .map(field => String(field.field_name || field.name || '').trim())
+    .filter(Boolean);
+  if (!requestedFields.length || sentFields.length || !availableFields.length) return;
+  const err = new Error(`${context}字段未匹配：请确认 table_id 指向正确表格，或飞书字段名与模板一致`);
+  err.status = 400;
+  err.details = {
+    reason: 'field_mismatch',
+    context,
+    requestedFields,
+    availableFields: availableFields.slice(0, 50)
+  };
+  throw err;
 }
 
 function shanghaiDateKeyFromTime(time) {
@@ -1231,7 +1359,9 @@ function getPublishRecordIdentity(fields, tableFields) {
     device: normalizeFeishuCellValue(getPublishFieldValueByAlias(fields, '\u8bbe\u5907\u53f7', tableFields)),
     contentType: normalizeFeishuCellValue(getPublishFieldValueByAlias(fields, '\u5185\u5bb9\u7c7b\u578b', tableFields)),
     title: normalizeFeishuCellValue(getPublishFieldValueByAlias(fields, '\u5185\u5bb9\u6807\u9898 / \u9009\u9898', tableFields)),
-    publishedAt: normalizeFeishuCellValue(getPublishFieldValueByAlias(fields, '\u53d1\u5e03\u65f6\u95f4', tableFields))
+    publishedAt: normalizeFeishuCellValue(getPublishFieldValueByAlias(fields, '\u53d1\u5e03\u65f6\u95f4', tableFields)),
+    draftId: normalizeFeishuCellValue(getPublishFieldValueByAlias(fields, '\u672c\u5730\u6587\u6848ID', tableFields)),
+    marketingRecordId: normalizeFeishuCellValue(getPublishFieldValueByAlias(fields, '\u672c\u5730\u8425\u9500\u8bb0\u5f55ID', tableFields))
   };
 }
 
@@ -1241,6 +1371,98 @@ function isSamePublishIdentity(recordFields, identity, tableFields) {
   return current.publishDate === identity.publishDate
     && current.accountName === identity.accountName
     && current.device === identity.device;
+}
+
+function normalizePublishIdentityText(value) {
+  return normalizeFeishuCellValue(value).replace(/\s+/g, '').trim();
+}
+
+function normalizePublishDeviceIdentity(value) {
+  return normalizePublishIdentityText(value)
+    .toLowerCase()
+    .replace(/^(device|dev|\u8bbe\u5907)/, '')
+    .replace(/[\u53f7\u865f#\uff03]/g, '');
+}
+
+function normalizePublishTitleIdentity(value) {
+  return normalizePublishIdentityText(value)
+    .toLowerCase()
+    .replace(/[\u3000\s"'“”‘’.,，。:：;；!！?？()（）[\]【】<>《》]/g, '');
+}
+
+function normalizePublishTypeIdentity(value) {
+  return normalizePublishIdentityText(value).toLowerCase();
+}
+
+function isSamePublishBaseIdentity(recordFields, identity, tableFields) {
+  const current = getPublishRecordIdentity(recordFields, tableFields);
+  return current.publishDate === identity.publishDate
+    && normalizePublishIdentityText(current.accountName) === normalizePublishIdentityText(identity.accountName)
+    && normalizePublishDeviceIdentity(current.device) === normalizePublishDeviceIdentity(identity.device);
+}
+
+function isCompatiblePublishDetailIdentity(recordFields, identity, tableFields) {
+  const current = getPublishRecordIdentity(recordFields, tableFields);
+  const currentType = normalizePublishTypeIdentity(current.contentType);
+  const expectedType = normalizePublishTypeIdentity(identity.contentType);
+  if (currentType && expectedType && currentType !== expectedType) return false;
+  const currentTitle = normalizePublishTitleIdentity(current.title);
+  const expectedTitle = normalizePublishTitleIdentity(identity.title);
+  if (!currentTitle || !expectedTitle) return true;
+  return currentTitle === expectedTitle || currentTitle.includes(expectedTitle) || expectedTitle.includes(currentTitle);
+}
+
+function isSamePublishLocalLinkIdentity(recordFields, identity, tableFields) {
+  const current = getPublishRecordIdentity(recordFields, tableFields);
+  const expectedDraftId = normalizePublishIdentityText(identity.draftId);
+  const currentDraftId = normalizePublishIdentityText(current.draftId);
+  if (expectedDraftId && currentDraftId && expectedDraftId === currentDraftId) return true;
+  const expectedMarketingId = normalizePublishIdentityText(identity.marketingRecordId);
+  const currentMarketingId = normalizePublishIdentityText(current.marketingRecordId);
+  return !!(expectedMarketingId && currentMarketingId && expectedMarketingId === currentMarketingId);
+}
+
+function isSamePublishTitleIdentity(recordFields, identity, tableFields) {
+  const current = getPublishRecordIdentity(recordFields, tableFields);
+  const currentTitle = normalizePublishTitleIdentity(current.title);
+  const expectedTitle = normalizePublishTitleIdentity(identity.title);
+  if (!currentTitle || !expectedTitle) return false;
+  return currentTitle === expectedTitle || currentTitle.includes(expectedTitle) || expectedTitle.includes(currentTitle);
+}
+
+function findPublishIdentityMatches(records, identity, tableFields, options = {}) {
+  const list = Array.isArray(records) ? records : [];
+  const publishRecordId = normalizePublishIdentityText(identity.publishRecordId);
+  if (publishRecordId) {
+    const byId = list.filter(record => normalizePublishIdentityText(getPublishRecordIdentity(record?.fields || {}, tableFields).publishRecordId) === publishRecordId);
+    if (byId.length) return { records: byId, matchMode: 'record_id' };
+  }
+
+  const base = list.filter(record => isSamePublishBaseIdentity(record?.fields || {}, identity, tableFields));
+  if (!publishRecordId && !options.conservativeFallback) return { records: base, matchMode: base.length ? 'legacy_base' : 'none', baseCount: base.length };
+  if (publishRecordId && base.length > 1) {
+    const linked = base.filter(record => isSamePublishLocalLinkIdentity(record?.fields || {}, identity, tableFields));
+    if (linked.length === 1) return { records: linked, matchMode: 'base_local_id_unique', baseCount: base.length };
+    if (linked.length > 1) return { records: [], matchMode: 'base_local_id_ambiguous', baseCount: linked.length };
+    const titled = base.filter(record => isSamePublishTitleIdentity(record?.fields || {}, identity, tableFields));
+    if (titled.length === 1) return { records: titled, matchMode: 'base_title_unique', baseCount: base.length };
+    if (titled.length > 1) return { records: [], matchMode: 'base_title_ambiguous', baseCount: titled.length };
+  }
+  if (base.length === 1) return { records: base, matchMode: 'base_unique' };
+
+  const detailed = base.filter(record => isCompatiblePublishDetailIdentity(record?.fields || {}, identity, tableFields));
+  if (detailed.length === 1) return { records: detailed, matchMode: 'base_detail_unique' };
+  if (detailed.length > 1) return { records: [], matchMode: 'base_detail_ambiguous', baseCount: detailed.length };
+  return { records: [], matchMode: base.length ? 'base_ambiguous' : 'none', baseCount: base.length };
+}
+
+function describePublishIdentityMatchFailure(details = {}) {
+  const matchMode = String(details.matchMode || '').trim();
+  const baseCount = Number(details.baseCount || 0);
+  if ((matchMode === 'base_ambiguous' || matchMode === 'base_detail_ambiguous' || matchMode === 'base_local_id_ambiguous' || matchMode === 'base_title_ambiguous') && baseCount > 1) {
+    return `发布记录匹配到 ${baseCount} 条同日同账号同设备候选，无法唯一确认。请在飞书发布记录表补齐“发布记录ID”，或先处理重复发布记录。`;
+  }
+  return '';
 }
 
 function normalizePublishPreviewBool(value) {
@@ -1460,6 +1682,73 @@ function buildPublishSuggestionMergedPreview(group, records) {
   };
 }
 
+function isGenericPublishDuplicateTitle(value) {
+  const text = String(value || '').trim();
+  if (!text) return true;
+  return [
+    '工作台标记',
+    '手动补记发布',
+    '网页已发布标记',
+    '发布标记'
+  ].includes(text);
+}
+
+function classifyPublishDuplicateRisk(records, cleanupRecords, conflicts) {
+  const conflictFields = new Set((conflicts || []).map(conflict => conflict.field).filter(Boolean));
+  const reasons = [];
+  let riskLevel = 'low';
+
+  const hasMarketingRecord = records.some(record => record.isMarketing);
+  const hasRewardRecord = records.some(record => record.reward);
+  const hasManualConflict = conflictFields.has('isManual');
+  const hasMarketingConflict = conflictFields.has('isMarketing');
+  const hasTitleConflict = conflictFields.has('title');
+  const hasNoteConflict = conflictFields.has('note');
+  const hasPlayConflict = conflictFields.has('play');
+  const playValueSet = new Set(records.map(record => hasPublishSuggestionValue(record.play) ? String(record.play).trim() : '(空)'));
+  const hasPlaySpread = records.some(record => hasPublishSuggestionValue(record.play)) && playValueSet.size >= 2;
+  const hasMeaningfulTitleConflict = hasTitleConflict && records.some(record => !isGenericPublishDuplicateTitle(record.title));
+
+  if (hasMarketingRecord || hasRewardRecord || hasManualConflict || hasMarketingConflict || hasMeaningfulTitleConflict || hasNoteConflict) {
+    riskLevel = 'high';
+    if (hasMarketingRecord || hasMarketingConflict) reasons.push('包含营销标记或营销冲突');
+    if (hasRewardRecord) reasons.push('包含激励信息');
+    if (hasManualConflict) reasons.push('补记状态不一致');
+    if (hasMeaningfulTitleConflict) reasons.push('内容标题不是单纯系统标记');
+    if (hasNoteConflict) reasons.push('备注不一致');
+  } else if (hasPlayConflict || hasPlaySpread || conflictFields.size) {
+    riskLevel = 'review';
+    if (hasPlayConflict || hasPlaySpread) reasons.push('播放 / 阅读量不同，需确认保留记录已取最大值');
+    const otherConflicts = [...conflictFields].filter(field => field !== 'play');
+    if (otherConflicts.length) reasons.push('存在非关键字段差异');
+  } else {
+    reasons.push('字段基本一致，像历史重复标记');
+  }
+
+  if (!cleanupRecords.length) {
+    riskLevel = riskLevel === 'low' ? 'review' : riskLevel;
+    reasons.push('没有明确可处理的重复记录');
+  }
+
+  const labels = {
+    low: '低风险候选',
+    review: '需人工确认',
+    high: '高冲突勿删'
+  };
+  const advices = {
+    low: '可作为第一批人工核对对象；确认保留记录无误后，再手动处理重复项。',
+    review: '不要直接删除；先确认关键数值或差异字段是否已并入保留记录。',
+    high: '暂时不要删除；这组可能混有真实营销、补记、标题或备注信息。'
+  };
+
+  return {
+    riskLevel,
+    riskLabel: labels[riskLevel],
+    riskReasons: reasons,
+    riskAdvice: advices[riskLevel]
+  };
+}
+
 function buildPublishDuplicateSuggestion(group) {
   const records = (group.records || []).map((record, index) => ({
     ...record,
@@ -1482,6 +1771,9 @@ function buildPublishDuplicateSuggestion(group) {
   if (!reasons.length) reasons.push('信息完整度与同组记录接近');
   if (keep._time) reasons.push('时间较新');
   else reasons.push('无法判断最新，按列表顺序保留更靠后的记录');
+  const conflicts = buildPublishSuggestionConflicts(records);
+  const mergedPreview = buildPublishSuggestionMergedPreview(group, records);
+  const risk = classifyPublishDuplicateRisk(records, cleanupRecords, conflicts);
 
   return {
     key: group.key,
@@ -1494,8 +1786,9 @@ function buildPublishDuplicateSuggestion(group) {
     suspectedCleanupRecordIds: cleanupRecords.map(record => record.record_id).filter(Boolean),
     cleanupRecordIds: cleanupRecords.map(record => record.record_id).filter(Boolean),
     keepReason: reasons.join('；'),
-    conflicts: buildPublishSuggestionConflicts(records),
-    mergedPreview: buildPublishSuggestionMergedPreview(group, records),
+    conflicts,
+    mergedPreview,
+    ...risk,
     records: records.map(({ _index, _score, _time, ...record }) => record)
   };
 }
@@ -1508,20 +1801,27 @@ async function previewPublishDuplicateSuggestions(appToken, tableId, token) {
     duplicateGroupCount: duplicatePreview.duplicateGroupCount,
     duplicateRecordCount: duplicatePreview.duplicateRecordCount,
     suggestionCount: groups.length,
+    riskStats: groups.reduce((stats, group) => {
+      const level = group.riskLevel || 'review';
+      stats[level] = (stats[level] || 0) + 1;
+      return stats;
+    }, { low: 0, review: 0, high: 0 }),
     groups
   };
 }
 
 function draftFieldAliasMap() {
   return new Map([
+    ['\u672c\u5730\u6587\u6848ID', ['\u672c\u5730\u6587\u6848ID', '\u6587\u6848ID', '\u672c\u5730\u8bb0\u5f55ID', 'localDraftId', 'draftId']],
     ['\u521b\u5efa\u65f6\u95f4', ['\u521b\u5efa\u65f6\u95f4', '\u521b\u5efa\u65e5\u671f', '\u65f6\u95f4']],
     ['\u8d26\u53f7\u540d', ['\u8d26\u53f7\u540d', '\u8d26\u53f7', '\u540d\u79f0']],
     ['\u8bbe\u5907\u53f7', ['\u8bbe\u5907\u53f7', '\u8bbe\u5907']],
     ['\u5185\u5bb9\u65b9\u5411', ['\u5185\u5bb9\u65b9\u5411', '\u65b9\u5411']],
-    ['\u5185\u5bb9\u7c7b\u578b', ['\u5185\u5bb9\u7c7b\u578b', '\u7c7b\u578b', '\u662f\u5426\u8425\u9500', '\u666e\u901a/\u8425\u9500']],
+    ['\u5185\u5bb9\u7c7b\u578b', ['\u5185\u5bb9\u7c7b\u578b', '\u5185\u5bb9\u65b9\u5411', '\u53d1\u5e03\u7c7b\u578b', '\u7c7b\u578b', '\u662f\u5426\u8425\u9500', '\u666e\u901a/\u8425\u9500']],
     ['\u9009\u9898', ['\u9009\u9898', '\u5185\u5bb9\u6807\u9898', '\u6807\u9898', '\u5185\u5bb9\u6807\u9898 / \u9009\u9898']],
     ['\u53d1\u5e03\u4f53\u88c1', ['\u53d1\u5e03\u4f53\u88c1', '\u4f53\u88c1', '\u7c7b\u578b']],
     ['\u53e3\u64ad\u811a\u672c', ['\u53e3\u64ad\u811a\u672c', '\u53e3\u64ad', '\u811a\u672c']],
+    ['\u6587\u6848\u6b63\u6587', ['\u6587\u6848\u6b63\u6587', '\u6587\u6848\u5185\u5bb9', '\u5185\u5bb9\u6b63\u6587', '\u6b63\u6587', '\u53e3\u64ad\u811a\u672c', '\u53e3\u64ad', '\u811a\u672c']],
     ['\u56fe\u6587\u7ed3\u6784', ['\u56fe\u6587\u7ed3\u6784', '\u56fe\u6587\u9875\u6587\u6848', '\u56fe\u6587\u6587\u6848']],
     ['\u914d\u6587', ['\u914d\u6587', '\u53d1\u5e03\u914d\u6587']],
     ['\u7f6e\u9876\u8bc4\u8bba', ['\u7f6e\u9876\u8bc4\u8bba', '\u7f6e\u9876']],
@@ -1530,10 +1830,12 @@ function draftFieldAliasMap() {
     ['\u6863\u4f4d', ['\u6863\u4f4d', '\u8bc4\u6863']],
     ['\u662f\u5426\u5df2\u4f7f\u7528', ['\u662f\u5426\u5df2\u4f7f\u7528', '\u5df2\u4f7f\u7528', '\u662f\u5426\u4f7f\u7528']],
     ['\u5f53\u524d\u72b6\u6001', ['\u5f53\u524d\u72b6\u6001', '\u72b6\u6001', '\u53d1\u5e03\u72b6\u6001']],
+    ['\u53d1\u5e03\u72b6\u6001', ['\u53d1\u5e03\u72b6\u6001', '\u5f53\u524d\u72b6\u6001', '\u72b6\u6001', '\u662f\u5426\u5df2\u4f7f\u7528', '\u5df2\u4f7f\u7528']],
     ['\u751f\u6210\u7248\u672c', ['\u751f\u6210\u7248\u672c', 'generationVersion', 'promptVersion', '\u751f\u6210\u89c4\u5219\u7248\u672c', '\u63d0\u793a\u8bcd\u7248\u672c']],
     ['\u8bc4\u6863\u65e5\u671f', ['\u8bc4\u6863\u65e5\u671f', '\u8bc4\u5206\u65e5\u671f', '\u590d\u76d8\u65e5\u671f']],
     ['\u4e09\u6863\u5931\u8d25\u539f\u56e0', ['\u4e09\u6863\u5931\u8d25\u539f\u56e0', '\u5931\u8d25\u539f\u56e0', '\u539f\u56e0']],
     ['\u53d1\u5e03\u65f6\u95f4', ['\u53d1\u5e03\u65f6\u95f4', '\u53d1\u5e03\u65e5\u671f']],
+    ['\u6570\u636e\u56de\u8bbf\u72b6\u6001', ['\u6570\u636e\u56de\u8bbf\u72b6\u6001', '\u56de\u8bbf\u72b6\u6001', 'dataReviewStatus']],
     ['20\u5206\u949f\u68c0\u67e5\u65f6\u95f4', ['20\u5206\u949f\u68c0\u67e5\u65f6\u95f4', '\u9996\u8f6e\u68c0\u67e5\u65f6\u95f4', 'firstCheckAt']],
     ['20\u5206\u949f\u662f\u5426\u5df2\u67e5\u770b', ['20\u5206\u949f\u662f\u5426\u5df2\u67e5\u770b', '\u9996\u8f6e\u662f\u5426\u5df2\u67e5\u770b', 'firstChecked']],
     ['20\u5206\u949f0\u6570\u636e\u4fe1\u53f7', ['20\u5206\u949f0\u6570\u636e\u4fe1\u53f7', 'firstCheckZeroData']],
@@ -1557,7 +1859,8 @@ function draftFieldAliasMap() {
     ['\u8bc4\u8bba', ['\u8bc4\u8bba', '\u8bc4\u8bba\u91cf']],
     ['\u6536\u85cf', ['\u6536\u85cf', '\u6536\u85cf\u91cf']],
     ['\u5206\u4eab', ['\u5206\u4eab', '\u8f6c\u53d1', '\u5206\u4eab\u91cf']],
-    ['\u590d\u76d8\u5907\u6ce8', ['\u590d\u76d8\u5907\u6ce8', '\u590d\u76d8', '\u5907\u6ce8']]
+    ['\u590d\u76d8\u5907\u6ce8', ['\u590d\u76d8\u5907\u6ce8', '\u590d\u76d8', '\u5907\u6ce8']],
+    ['\u5907\u6ce8', ['\u5907\u6ce8', '\u8bf4\u660e', '\u590d\u76d8\u5907\u6ce8']]
   ]);
 }
 
@@ -1594,6 +1897,38 @@ function normalizeDraftRecordFieldsForTable(fields, tableFields) {
   return next;
 }
 
+function getDraftFieldValueByAlias(fields, requestedName, tableFields) {
+  const source = fields || {};
+  if (Object.prototype.hasOwnProperty.call(source, requestedName)) return source[requestedName];
+  const fieldTypeByName = getPublishFieldTypeByName(tableFields);
+  const actualName = fieldTypeByName.size ? resolveDraftFieldName(requestedName, fieldTypeByName) : '';
+  if (actualName && Object.prototype.hasOwnProperty.call(source, actualName)) return source[actualName];
+  const aliases = draftFieldAliasMap().get(requestedName) || [requestedName];
+  const byCanonical = new Map();
+  Object.entries(source).forEach(([key, value]) => byCanonical.set(canonicalPublishFieldName(key), value));
+  for (const alias of aliases) {
+    const value = byCanonical.get(canonicalPublishFieldName(alias));
+    if (value !== undefined) return value;
+  }
+  return undefined;
+}
+
+function getDraftRecordIdentity(fields, tableFields) {
+  return {
+    draftId: normalizeFeishuCellValue(getDraftFieldValueByAlias(fields, '\u672c\u5730\u6587\u6848ID', tableFields))
+  };
+}
+
+function findDraftIdentityMatches(records, identity, tableFields) {
+  const list = Array.isArray(records) ? records : [];
+  const draftId = normalizeMarketingIdentityText(identity?.draftId || '');
+  if (!draftId) return { records: [], matchMode: 'none' };
+  const matched = list.filter(record => normalizeMarketingIdentityText(getDraftRecordIdentity(record?.fields || {}, tableFields).draftId) === draftId);
+  return matched.length
+    ? { records: matched, matchMode: 'local_id' }
+    : { records: [], matchMode: 'none' };
+}
+
 function marketingFieldAliasMap() {
   return new Map([
     ['\u8425\u9500\u53d1\u5e03\u65e5\u671f', ['\u8425\u9500\u53d1\u5e03\u65e5\u671f', '\u53d1\u5e03\u65e5\u671f', '\u8425\u9500\u65e5\u671f']],
@@ -1601,11 +1936,15 @@ function marketingFieldAliasMap() {
     ['\u8d26\u53f7\u540d', ['\u8d26\u53f7\u540d', '\u8d26\u53f7', '\u540d\u79f0']],
     ['\u8bbe\u5907\u53f7', ['\u8bbe\u5907\u53f7', '\u8bbe\u5907']],
     ['\u8425\u9500\u5185\u5bb9\u6807\u9898', ['\u8425\u9500\u5185\u5bb9\u6807\u9898', '\u8425\u9500\u6807\u9898', '\u5185\u5bb9\u6807\u9898', '\u6807\u9898']],
+    ['\u672c\u5730\u8425\u9500\u8bb0\u5f55ID', ['\u672c\u5730\u8425\u9500\u8bb0\u5f55ID', '\u672c\u5730\u8bb0\u5f55ID', '\u8425\u9500\u8bb0\u5f55ID', '\u8425\u9500ID', 'localMarketingId', 'marketingRecordId']],
     ['\u5220\u9664\u63d0\u9192\u65e5\u671f', ['\u5220\u9664\u63d0\u9192\u65e5\u671f', '\u5e94\u5220\u9664\u65e5\u671f', '\u5220\u9664\u65e5\u671f']],
     ['\u662f\u5426\u5df2\u5220\u9664', ['\u662f\u5426\u5df2\u5220\u9664', '\u5df2\u5220\u9664', '\u662f\u5426\u5220\u9664']],
     ['\u662f\u5426\u6307\u5b9a\u8425\u9500\u5185\u5bb9', ['\u662f\u5426\u6307\u5b9a\u8425\u9500\u5185\u5bb9', '\u662f\u5426\u4eba\u5de5\u6307\u5b9a\u8425\u9500\u5185\u5bb9', '\u4eba\u5de5\u6307\u5b9a\u8425\u9500\u5185\u5bb9']],
     ['\u6307\u5b9a\u8425\u9500\u5185\u5bb9', ['\u6307\u5b9a\u8425\u9500\u5185\u5bb9', '\u6307\u5b9a\u8425\u9500\u4efb\u52a1', '\u8425\u9500\u4efb\u52a1\u5907\u6ce8', '\u6307\u5b9a\u8425\u9500\u5907\u6ce8']],
     ['\u5f53\u524d\u72b6\u6001', ['\u5f53\u524d\u72b6\u6001', '\u72b6\u6001']],
+    ['\u5220\u9664\u5b8c\u6210\u65e5\u671f', ['\u5220\u9664\u5b8c\u6210\u65e5\u671f', '\u5220\u9664\u5b8c\u6210\u65f6\u95f4', '\u5b9e\u9645\u5220\u9664\u65e5\u671f', '\u5df2\u5220\u9664\u65e5\u671f', '\u5220\u9664\u65f6\u95f4', 'deletedAt']],
+    ['\u5220\u9664\u5907\u6ce8', ['\u5220\u9664\u5907\u6ce8', '\u5220\u9664\u539f\u56e0', '\u5220\u9664\u8bf4\u660e', '\u5220\u9664\u539f\u56e0\u8bf4\u660e', '\u98ce\u9669\u5907\u6ce8', '\u5907\u6ce8', '\u8bf4\u660e']],
+    ['\u8425\u9500\u5185\u5bb9\u6b63\u6587', ['\u8425\u9500\u5185\u5bb9\u6b63\u6587', '\u8425\u9500\u5185\u5bb9', '\u5185\u5bb9\u6b63\u6587', '\u8425\u9500\u6587\u6848', '\u6307\u5b9a\u8425\u9500\u5185\u5bb9']],
     ['\u64ad\u653e / \u9605\u8bfb\u91cf', ['\u64ad\u653e / \u9605\u8bfb\u91cf', '\u64ad\u653e/\u9605\u8bfb\u91cf', '\u64ad\u653e\u91cf', '\u9605\u8bfb\u91cf']],
     ['\u70b9\u8d5e', ['\u70b9\u8d5e', '\u70b9\u8d5e\u91cf']],
     ['\u8bc4\u8bba', ['\u8bc4\u8bba', '\u8bc4\u8bba\u91cf']],
@@ -1625,7 +1964,8 @@ function marketingFieldAliasMap() {
     ['\u8fd0\u8425\u8bca\u65ad\u5047\u8bbe', ['\u8fd0\u8425\u8bca\u65ad\u5047\u8bbe', 'operationDiagnosisHypothesis']],
     ['\u8fd0\u8425\u8bca\u65ad\u7f6e\u4fe1\u5ea6', ['\u8fd0\u8425\u8bca\u65ad\u7f6e\u4fe1\u5ea6', 'operationDiagnosisConfidence']],
     ['\u6765\u6e90', ['\u6765\u6e90', '\u89e6\u53d1\u6765\u6e90']],
-    ['\u98ce\u9669\u5907\u6ce8', ['\u98ce\u9669\u5907\u6ce8', '\u5907\u6ce8', '\u98ce\u9669']],
+    ['\u98ce\u9669\u5907\u6ce8', ['\u98ce\u9669\u5907\u6ce8', '\u5907\u6ce8', '\u8bf4\u660e', '\u98ce\u9669']],
+    ['\u5907\u6ce8', ['\u5907\u6ce8', '\u8bf4\u660e', '\u98ce\u9669\u5907\u6ce8']],
     ['\u521b\u5efa\u65f6\u95f4', ['\u521b\u5efa\u65f6\u95f4', '\u521b\u5efa\u65e5\u671f']]
   ]);
 }
@@ -1713,11 +2053,29 @@ function getMarketingFieldValueByAlias(fields, requestedName, tableFields) {
 
 function getMarketingRecordIdentity(fields, tableFields) {
   return {
+    localId: normalizeFeishuCellValue(getMarketingFieldValueByAlias(fields, '\u672c\u5730\u8425\u9500\u8bb0\u5f55ID', tableFields)),
     postedAt: normalizePublishIdentityDay(getMarketingFieldValueByAlias(fields, '\u8425\u9500\u53d1\u5e03\u65e5\u671f', tableFields)),
     accountName: normalizeFeishuCellValue(getMarketingFieldValueByAlias(fields, '\u8d26\u53f7\u540d', tableFields)),
     device: normalizeFeishuCellValue(getMarketingFieldValueByAlias(fields, '\u8bbe\u5907\u53f7', tableFields)),
     title: normalizeFeishuCellValue(getMarketingFieldValueByAlias(fields, '\u8425\u9500\u5185\u5bb9\u6807\u9898', tableFields))
   };
+}
+
+function normalizeMarketingIdentityText(value) {
+  return normalizeFeishuCellValue(value).replace(/\s+/g, '').trim();
+}
+
+function normalizeMarketingDeviceIdentity(value) {
+  return normalizeMarketingIdentityText(value)
+    .toLowerCase()
+    .replace(/^(device|dev|\u8bbe\u5907)/, '')
+    .replace(/[\u53f7\u865f#\uff03]/g, '');
+}
+
+function normalizeMarketingTitleIdentity(value) {
+  return normalizeMarketingIdentityText(value)
+    .toLowerCase()
+    .replace(/[\u3000\s"'“”‘’.,，。:：;；!！?？()（）[\]【】<>《》]/g, '');
 }
 
 function isSameMarketingIdentity(recordFields, identity, tableFields) {
@@ -1726,6 +2084,66 @@ function isSameMarketingIdentity(recordFields, identity, tableFields) {
     && current.accountName === identity.accountName
     && current.device === identity.device
     && current.title === identity.title;
+}
+
+function isSameMarketingBaseIdentity(recordFields, identity, tableFields) {
+  const current = getMarketingRecordIdentity(recordFields, tableFields);
+  return current.postedAt === identity.postedAt
+    && normalizeMarketingIdentityText(current.accountName) === normalizeMarketingIdentityText(identity.accountName)
+    && normalizeMarketingDeviceIdentity(current.device) === normalizeMarketingDeviceIdentity(identity.device);
+}
+
+function isCompatibleMarketingTitle(recordFields, identity, tableFields) {
+  const current = getMarketingRecordIdentity(recordFields, tableFields);
+  const currentTitle = normalizeMarketingTitleIdentity(current.title);
+  const expectedTitle = normalizeMarketingTitleIdentity(identity.title);
+  return Boolean(currentTitle && expectedTitle && (currentTitle === expectedTitle || currentTitle.includes(expectedTitle) || expectedTitle.includes(currentTitle)));
+}
+
+function findMarketingIdentityMatches(records, identity, tableFields) {
+  const list = Array.isArray(records) ? records : [];
+  const localId = normalizeMarketingIdentityText(identity.localId);
+  if (localId) {
+    const byLocalId = list.filter(record => normalizeMarketingIdentityText(getMarketingRecordIdentity(record?.fields || {}, tableFields).localId) === localId);
+    if (byLocalId.length) return { records: byLocalId, matchMode: 'local_id' };
+  }
+
+  const exact = list.filter(record => isSameMarketingIdentity(record?.fields || {}, identity, tableFields));
+  if (exact.length) return { records: exact, matchMode: 'exact' };
+
+  const base = list.filter(record => isSameMarketingBaseIdentity(record?.fields || {}, identity, tableFields));
+  if (base.length === 1) return { records: base, matchMode: 'base_unique' };
+
+  const titled = base.filter(record => isCompatibleMarketingTitle(record?.fields || {}, identity, tableFields));
+  if (titled.length === 1) return { records: titled, matchMode: 'base_title_unique' };
+  if (titled.length > 1) return { records: [], matchMode: 'base_title_ambiguous', baseCount: titled.length };
+
+  return { records: [], matchMode: base.length ? 'base_ambiguous' : 'none', baseCount: base.length };
+}
+
+function getMissingMarketingIdentityFields(identity) {
+  const missing = [];
+  if (!identity.postedAt) missing.push('\u8425\u9500\u53d1\u5e03\u65e5\u671f');
+  if (!identity.accountName) missing.push('\u8d26\u53f7\u540d');
+  if (!identity.device) missing.push('\u8bbe\u5907\u53f7');
+  if (!identity.title) missing.push('\u8425\u9500\u5185\u5bb9\u6807\u9898');
+  return missing;
+}
+
+function describeMarketingIdentityMatchFailure(details = {}) {
+  const matchMode = String(details.matchMode || '').trim();
+  const baseCount = Number(details.baseCount || 0);
+  const missingFields = Array.isArray(details.missingFields) ? details.missingFields.filter(Boolean) : [];
+  if (missingFields.length) {
+    return `营销记录缺少匹配字段：${missingFields.join('、')}。如飞书表已新增“本地营销记录ID”字段，请先重新同步该记录。`;
+  }
+  if ((matchMode === 'base_ambiguous' || matchMode === 'base_title_ambiguous') && baseCount > 1) {
+    return `营销记录匹配到 ${baseCount} 条同日同账号同设备候选，但标题无法唯一确认。请保留唯一标题，或在飞书营销表添加“本地营销记录ID”字段后重试。`;
+  }
+  if (matchMode === 'none') {
+    return '飞书营销表没有找到同一条记录。请核对本地营销记录ID、营销发布日期、账号名、设备号和标题。';
+  }
+  return '';
 }
 
 async function listBitableFields(appToken, tableId, token) {
@@ -1744,7 +2162,7 @@ async function listBitableFields(appToken, tableId, token) {
     });
 
     if (data.code !== 0) {
-      const err = new Error(data.msg || 'Failed to list publish table fields');
+      const err = new Error(data.msg || '读取飞书表字段失败');
       err.status = 400;
       err.details = {
         code: data.code,
@@ -1779,6 +2197,7 @@ async function createBitableRecord(appToken, tableId, fields, token) {
     sentCount: Object.keys(normalizedFields).length,
     skippedCount: Math.max(0, Object.keys(fields || {}).length - Object.keys(normalizedFields).length)
   });
+  assertNormalizedFieldsNotEmpty('发布记录表', fields, normalizedFields, tableFields);
   const data = await requestFeishuJson('publish_record_create', url, {
     method: 'POST',
     headers: {
@@ -1791,7 +2210,7 @@ async function createBitableRecord(appToken, tableId, fields, token) {
   });
 
   if (data.code !== 0) {
-    const err = new Error(data.msg || 'Failed to create publish record');
+    const err = new Error(data.msg || '新增飞书发布记录失败');
     err.status = 400;
     err.details = {
       code: data.code,
@@ -1824,6 +2243,7 @@ async function createAccountBitableRecord(appToken, tableId, fields, token) {
     skippedFields,
     tableFieldNames: tableFields.map(field => field.field_name || field.name || '').filter(Boolean)
   });
+  assertNormalizedFieldsNotEmpty('账号表', fields, normalizedFields, tableFields);
   const data = await requestFeishuJson('account_record_create', url, {
     method: 'POST',
     headers: {
@@ -1836,7 +2256,7 @@ async function createAccountBitableRecord(appToken, tableId, fields, token) {
   });
 
   if (data.code !== 0) {
-    const err = new Error(data.msg || 'Failed to create account record');
+    const err = new Error(data.msg || '新增飞书账号记录失败');
     err.status = 400;
     err.details = {
       code: data.code,
@@ -1872,6 +2292,7 @@ async function updateAccountBitableRecord(appToken, tableId, recordId, fields, t
     skippedFields,
     tableFieldNames: tableFields.map(field => field.field_name || field.name || '').filter(Boolean)
   });
+  assertNormalizedFieldsNotEmpty('账号表', fields, normalizedFields, tableFields);
   const data = await requestFeishuJson('account_record_update', url, {
     method: 'PUT',
     headers: {
@@ -1884,7 +2305,7 @@ async function updateAccountBitableRecord(appToken, tableId, recordId, fields, t
   });
 
   if (data.code !== 0) {
-    const err = new Error(data.msg || 'Failed to update account record');
+    const err = new Error(data.msg || '更新飞书账号记录失败');
     err.status = 400;
     err.details = {
       code: data.code,
@@ -1906,6 +2327,7 @@ async function createDailyReportBitableRecord(appToken, tableId, fields, token, 
     skippedCount: Math.max(0, Object.keys(fields || {}).length - Object.keys(normalizedFields).length),
     reportLength: String(fields?.['\u4eca\u65e5\u6c47\u62a5\u5168\u6587'] || '').length
   });
+  assertNormalizedFieldsNotEmpty('日报表', fields, normalizedFields, tableFields);
   const data = await requestFeishuJson('daily_report_create', url, {
     method: 'POST',
     headers: {
@@ -1918,7 +2340,7 @@ async function createDailyReportBitableRecord(appToken, tableId, fields, token, 
   });
 
   if (data.code !== 0) {
-    const err = new Error(data.msg || 'Failed to create daily report');
+    const err = new Error(data.msg || '新增飞书日报失败');
     err.status = 400;
     err.details = {
       code: data.code,
@@ -1940,6 +2362,7 @@ async function updateDailyReportBitableRecord(appToken, tableId, recordId, field
     skippedCount: Math.max(0, Object.keys(fields || {}).length - Object.keys(normalizedFields).length),
     reportLength: String(fields?.['\u4eca\u65e5\u6c47\u62a5\u5168\u6587'] || '').length
   });
+  assertNormalizedFieldsNotEmpty('日报表', fields, normalizedFields, tableFields);
   const data = await requestFeishuJson('daily_report_update', url, {
     method: 'PUT',
     headers: {
@@ -1952,7 +2375,7 @@ async function updateDailyReportBitableRecord(appToken, tableId, recordId, field
   });
 
   if (data.code !== 0) {
-    const err = new Error(data.msg || 'Failed to update daily report');
+    const err = new Error(data.msg || '更新飞书日报失败');
     err.status = 400;
     err.details = {
       code: data.code,
@@ -2043,6 +2466,7 @@ async function updatePublishBitableRecord(appToken, tableId, recordId, fields, t
     sentCount: Object.keys(normalizedFields).length,
     skippedCount: Math.max(0, Object.keys(fields || {}).length - Object.keys(normalizedFields).length)
   });
+  assertNormalizedFieldsNotEmpty('发布记录表', fields, normalizedFields, tableFields);
   const data = await requestFeishuJson('publish_record_update', url, {
     method: 'PUT',
     headers: {
@@ -2055,7 +2479,7 @@ async function updatePublishBitableRecord(appToken, tableId, recordId, fields, t
   });
 
   if (data.code !== 0) {
-    const err = new Error(data.msg || 'Failed to update publish record');
+    const err = new Error(data.msg || '更新飞书发布记录失败');
     err.status = 400;
     err.details = {
       code: data.code,
@@ -2078,7 +2502,7 @@ async function deletePublishBitableRecord(appToken, tableId, recordId, token) {
   });
 
   if (data.code !== 0) {
-    const err = new Error(data.msg || 'Failed to delete publish record');
+    const err = new Error(data.msg || '删除飞书发布记录失败');
     err.status = 400;
     err.details = {
       code: data.code,
@@ -2111,7 +2535,16 @@ async function upsertPublishBitableRecord(appToken, tableId, fields, token) {
   }
 
   const records = await listBitableRecords(appToken, tableId, token);
-  const matchedRecords = records.filter(record => isSamePublishIdentity(record?.fields || {}, identity, tableFields));
+  const matchResult = findPublishIdentityMatches(records, identity, tableFields, { conservativeFallback: Boolean(identity.publishRecordId) });
+  const matchedRecords = matchResult.records;
+  const createAfterAmbiguousLegacy = !matchedRecords.length && identity.publishRecordId && matchResult.matchMode !== 'none';
+  if (createAfterAmbiguousLegacy) {
+    console.log('[feishu-publish-record] ambiguous legacy candidates; creating id-tagged record instead of updating legacy rows', {
+      publishRecordId: identity.publishRecordId,
+      matchMode: matchResult.matchMode,
+      baseCount: matchResult.baseCount || 0
+    });
+  }
 
   if (matchedRecords.length) {
     let lastData = null;
@@ -2126,15 +2559,24 @@ async function upsertPublishBitableRecord(appToken, tableId, fields, token) {
       action: 'updated',
       recordId: getBitableRecordId(lastData, firstRecordId),
       updatedCount: matchedRecords.length,
-      identity
+      identity,
+      matchMode: matchResult.matchMode
     };
   }
 
   const data = await createBitableRecord(appToken, tableId, fields, token);
-  return { data, action: 'created', recordId: getBitableRecordId(data), identity };
+  return {
+    data,
+    action: 'created',
+    recordId: getBitableRecordId(data),
+    identity,
+    matchMode: createAfterAmbiguousLegacy ? `created_after_${matchResult.matchMode}` : 'created',
+    baseCount: createAfterAmbiguousLegacy ? (matchResult.baseCount || 0) : 0
+  };
 }
 
 async function deletePublishBitableRecordByIdentity(appToken, tableId, fields, token, explicitRecordId = '') {
+  const explicitId = String(explicitRecordId || '').trim();
   let tableFields = [];
   try {
     tableFields = await listBitableFields(appToken, tableId, token);
@@ -2146,29 +2588,33 @@ async function deletePublishBitableRecordByIdentity(appToken, tableId, fields, t
   }
 
   const identity = getPublishRecordIdentity(fields, tableFields);
-  if (!explicitRecordId && !identity.publishRecordId && (!identity.publishDate || !identity.accountName || !identity.device)) {
+  if (!explicitId && !identity.publishRecordId && (!identity.publishDate || !identity.accountName || !identity.device)) {
     const err = new Error('Missing publish record delete identity: 发布日期 + 账号名 + 设备号');
     err.status = 400;
     err.details = { identity };
     throw err;
   }
 
-  const records = await listBitableRecords(appToken, tableId, token);
-  const recordIds = [];
-  if (explicitRecordId) recordIds.push(explicitRecordId);
-  records
-    .filter(record => isSamePublishIdentity(record?.fields || {}, identity, tableFields))
-    .forEach(record => {
-      const recordId = record.record_id || record.recordId || record.id || '';
-      if (recordId && !recordIds.includes(recordId)) recordIds.push(recordId);
-    });
+  const recordIds = explicitId ? [explicitId] : [];
+  let matchResult = { records: [], matchMode: explicitId ? 'explicit_record_id' : 'none', baseCount: 0 };
+  if (!explicitId) {
+    const records = await listBitableRecords(appToken, tableId, token);
+    matchResult = findPublishIdentityMatches(records, identity, tableFields, { conservativeFallback: Boolean(identity.publishRecordId) });
+    matchResult.records
+      .forEach(record => {
+        const recordId = record.record_id || record.recordId || record.id || '';
+        if (recordId && !recordIds.includes(recordId)) recordIds.push(recordId);
+      });
+  }
 
   console.log('[feishu-publish-record] delete identity matches', {
     accountName: identity.accountName,
     publishDate: identity.publishDate,
     device: identity.device,
-    explicitRecordIdPresent: Boolean(explicitRecordId),
-    matchedCount: recordIds.length
+    explicitRecordIdPresent: Boolean(explicitId),
+    matchedCount: recordIds.length,
+    matchMode: matchResult.matchMode,
+    baseCount: matchResult.baseCount || 0
   });
 
   if (!recordIds.length) {
@@ -2177,7 +2623,9 @@ async function deletePublishBitableRecordByIdentity(appToken, tableId, fields, t
       action: 'not_found',
       deletedCount: 0,
       recordIds: [],
-      identity
+      identity,
+      matchMode: matchResult.matchMode,
+      baseCount: matchResult.baseCount || 0
     };
   }
 
@@ -2186,9 +2634,21 @@ async function deletePublishBitableRecordByIdentity(appToken, tableId, fields, t
     lastData = await deletePublishBitableRecord(appToken, tableId, recordId, token);
   }
 
+  if (explicitId) {
+    return {
+      data: lastData,
+      action: 'deleted',
+      deletedCount: recordIds.length,
+      recordIds,
+      recordId: recordIds[0] || '',
+      identity,
+      matchMode: matchResult.matchMode
+    };
+  }
+
   await wait(500);
   const recordsAfterDelete = await listBitableRecords(appToken, tableId, token);
-  const remainingRecords = recordsAfterDelete.filter(record => isSamePublishIdentity(record?.fields || {}, identity, tableFields));
+  const remainingRecords = findPublishIdentityMatches(recordsAfterDelete, identity, tableFields, { conservativeFallback: Boolean(identity.publishRecordId) }).records;
   if (remainingRecords.length) {
     const remainingRecordIds = remainingRecords
       .map(record => record.record_id || record.recordId || record.id || '')
@@ -2233,12 +2693,38 @@ async function createDraftBitableRecord(appToken, tableId, fields, token) {
       msg: error.details?.msg || error.message || ''
     });
   }
+  const identity = getDraftRecordIdentity(fields, tableFields);
   const normalizedFields = normalizeDraftRecordFieldsForTable(fields, tableFields);
   console.log('[feishu-draft] normalized fields', {
     requestedCount: Object.keys(fields || {}).length,
     sentCount: Object.keys(normalizedFields).length,
     skippedCount: Math.max(0, Object.keys(fields || {}).length - Object.keys(normalizedFields).length)
   });
+  assertNormalizedFieldsNotEmpty('文案库表', fields, normalizedFields, tableFields);
+
+  if (identity.draftId) {
+    const records = await listBitableRecords(appToken, tableId, token);
+    const matchResult = findDraftIdentityMatches(records, identity, tableFields);
+    if (matchResult.records.length) {
+      let lastData = null;
+      let firstRecordId = '';
+      for (const matched of matchResult.records) {
+        const recordId = matched.record_id || matched.recordId || matched.id || '';
+        if (!recordId) continue;
+        if (!firstRecordId) firstRecordId = recordId;
+        lastData = await updateDraftBitableRecord(appToken, tableId, recordId, fields, token, tableFields);
+      }
+      return {
+        data: lastData,
+        action: 'updated',
+        recordId: getBitableRecordId(lastData, firstRecordId),
+        updatedCount: matchResult.records.length,
+        identity,
+        matchMode: matchResult.matchMode
+      };
+    }
+  }
+
   const data = await requestFeishuJson('draft_create', url, {
     method: 'POST',
     headers: {
@@ -2251,7 +2737,48 @@ async function createDraftBitableRecord(appToken, tableId, fields, token) {
   });
 
   if (data.code !== 0) {
-    const err = new Error(data.msg || 'Failed to create draft');
+    const err = new Error(data.msg || '新增飞书文案失败');
+    err.status = 400;
+    err.details = {
+      code: data.code,
+      msg: data.msg || data.message || '',
+      raw: summarizeFeishuResponse(data)
+    };
+    throw err;
+  }
+
+  return {
+    data,
+    action: 'created',
+    recordId: getBitableRecordId(data),
+    updatedCount: 0,
+    identity,
+    matchMode: 'created'
+  };
+}
+
+async function updateDraftBitableRecord(appToken, tableId, recordId, fields, token, tableFields = []) {
+  const url = `${FEISHU_BASE_URL}/bitable/v1/apps/${encodeURIComponent(appToken)}/tables/${encodeURIComponent(tableId)}/records/${encodeURIComponent(recordId)}`;
+  const normalizedFields = normalizeDraftRecordFieldsForTable(fields, tableFields);
+  console.log('[feishu-draft] update normalized fields', {
+    requestedCount: Object.keys(fields || {}).length,
+    sentCount: Object.keys(normalizedFields).length,
+    skippedCount: Math.max(0, Object.keys(fields || {}).length - Object.keys(normalizedFields).length)
+  });
+  assertNormalizedFieldsNotEmpty('文案库表', fields, normalizedFields, tableFields);
+  const data = await requestFeishuJson('draft_update', url, {
+    method: 'PUT',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      fields: normalizedFields
+    })
+  });
+
+  if (data.code !== 0) {
+    const err = new Error(data.msg || '更新飞书文案失败');
     err.status = 400;
     err.details = {
       code: data.code,
@@ -2274,7 +2801,7 @@ async function deleteDraftBitableRecord(appToken, tableId, recordId, token) {
   });
 
   if (data.code !== 0) {
-    const err = new Error(data.msg || 'Failed to delete draft');
+    const err = new Error(data.msg || '删除飞书文案失败');
     err.status = 400;
     err.details = {
       code: data.code,
@@ -2299,12 +2826,38 @@ async function createMarketingBitableRecord(appToken, tableId, fields, token) {
     });
   }
   const completedFields = completeMarketingStatusFields(fields);
+  const identity = getMarketingRecordIdentity(completedFields, tableFields);
   const normalizedFields = normalizeMarketingRecordFieldsForTable(completedFields, tableFields);
   console.log('[feishu-marketing] normalized fields', {
     requestedCount: Object.keys(completedFields || {}).length,
     sentCount: Object.keys(normalizedFields).length,
     skippedCount: Math.max(0, Object.keys(completedFields || {}).length - Object.keys(normalizedFields).length)
   });
+  assertNormalizedFieldsNotEmpty('营销记录表', completedFields, normalizedFields, tableFields);
+
+  if (identity.postedAt && identity.accountName && identity.device && identity.title) {
+    const records = await listBitableRecords(appToken, tableId, token);
+    const matchResult = findMarketingIdentityMatches(records, identity, tableFields);
+    if (matchResult.records.length) {
+      let lastData = null;
+      let firstRecordId = '';
+      for (const matched of matchResult.records) {
+        const recordId = matched.record_id || matched.recordId || matched.id || '';
+        if (!recordId) continue;
+        if (!firstRecordId) firstRecordId = recordId;
+        lastData = await updateMarketingBitableRecord(appToken, tableId, recordId, completedFields, token);
+      }
+      return {
+        data: lastData,
+        action: 'updated',
+        recordId: getBitableRecordId(lastData, firstRecordId),
+        updatedCount: matchResult.records.length,
+        identity,
+        matchMode: matchResult.matchMode
+      };
+    }
+  }
+
   const data = await requestFeishuJson('marketing_record_create', url, {
     method: 'POST',
     headers: {
@@ -2317,7 +2870,7 @@ async function createMarketingBitableRecord(appToken, tableId, fields, token) {
   });
 
   if (data.code !== 0) {
-    const err = new Error(data.msg || 'Failed to create marketing record');
+    const err = new Error(data.msg || '新增飞书营销记录失败');
     err.status = 400;
     err.details = {
       code: data.code,
@@ -2327,7 +2880,14 @@ async function createMarketingBitableRecord(appToken, tableId, fields, token) {
     throw err;
   }
 
-  return data;
+  return {
+    data,
+    action: 'created',
+    recordId: getBitableRecordId(data),
+    updatedCount: 0,
+    identity,
+    matchMode: 'created'
+  };
 }
 
 async function updateMarketingBitableRecord(appToken, tableId, recordId, fields, token) {
@@ -2348,6 +2908,7 @@ async function updateMarketingBitableRecord(appToken, tableId, recordId, fields,
     sentCount: Object.keys(normalizedFields).length,
     skippedCount: Math.max(0, Object.keys(completedFields || {}).length - Object.keys(normalizedFields).length)
   });
+  assertNormalizedFieldsNotEmpty('营销记录表', completedFields, normalizedFields, tableFields);
   const data = await requestFeishuJson('marketing_record_update', url, {
     method: 'PUT',
     headers: {
@@ -2360,7 +2921,7 @@ async function updateMarketingBitableRecord(appToken, tableId, recordId, fields,
   });
 
   if (data.code !== 0) {
-    const err = new Error(data.msg || 'Failed to update marketing record');
+    const err = new Error(data.msg || '更新飞书营销记录失败');
     err.status = 400;
     err.details = {
       code: data.code,
@@ -2383,7 +2944,7 @@ async function deleteMarketingBitableRecord(appToken, tableId, recordId, token) 
   });
 
   if (data.code !== 0) {
-    const err = new Error(data.msg || 'Failed to delete marketing record');
+    const err = new Error(data.msg || '删除飞书营销记录失败');
     err.status = 400;
     err.details = {
       code: data.code,
@@ -2409,19 +2970,21 @@ async function updateMarketingBitableRecordByIdentity(appToken, tableId, fields,
 
   const completedFields = completeMarketingStatusFields(fields);
   const identity = getMarketingRecordIdentity(completedFields, tableFields);
-  if (!identity.postedAt || !identity.accountName || !identity.device || !identity.title) {
+  const missingIdentityFields = getMissingMarketingIdentityFields(identity);
+  if (!identity.localId && missingIdentityFields.length) {
     const err = new Error('Missing marketing recordId or identity: 营销发布日期 + 账号名 + 设备号 + 营销内容标题');
     err.status = 400;
-    err.details = { identity };
+    err.details = { identity, missingFields: missingIdentityFields };
     throw err;
   }
 
   const records = await listBitableRecords(appToken, tableId, token);
-  const matchedRecords = records.filter(record => isSameMarketingIdentity(record?.fields || {}, identity, tableFields));
+  const matchResult = findMarketingIdentityMatches(records, identity, tableFields);
+  const matchedRecords = matchResult.records;
   if (!matchedRecords.length) {
     const err = new Error('Marketing record not found for update identity');
     err.status = 404;
-    err.details = { identity };
+    err.details = { identity, matchMode: matchResult.matchMode, baseCount: matchResult.baseCount || 0 };
     throw err;
   }
 
@@ -2438,11 +3001,13 @@ async function updateMarketingBitableRecordByIdentity(appToken, tableId, fields,
     data: lastData,
     recordId: getBitableRecordId(lastData, firstRecordId),
     updatedCount: matchedRecords.length,
-    identity
+    identity,
+    matchMode: matchResult.matchMode
   };
 }
 
 async function deleteMarketingBitableRecordByIdentity(appToken, tableId, fields, token, explicitRecordId = '') {
+  const explicitId = String(explicitRecordId || '').trim();
   let tableFields = [];
   try {
     tableFields = await listBitableFields(appToken, tableId, token);
@@ -2455,39 +3020,46 @@ async function deleteMarketingBitableRecordByIdentity(appToken, tableId, fields,
 
   const completedFields = completeMarketingStatusFields(fields);
   const identity = getMarketingRecordIdentity(completedFields, tableFields);
-  if (!identity.postedAt || !identity.accountName || !identity.device || !identity.title) {
+  const missingIdentityFields = getMissingMarketingIdentityFields(identity);
+  if (!explicitId && !identity.localId && missingIdentityFields.length) {
     const err = new Error('Missing marketing delete identity: 营销发布日期 + 账号名 + 设备号 + 营销内容标题');
     err.status = 400;
-    err.details = { identity };
+    err.details = { identity, missingFields: missingIdentityFields };
     throw err;
   }
 
-  const records = await listBitableRecords(appToken, tableId, token);
-  const recordIds = [];
-  records
-    .filter(record => isSameMarketingIdentity(record?.fields || {}, identity, tableFields))
-    .forEach(record => {
-      const recordId = record.record_id || record.recordId || record.id || '';
-      if (recordId && !recordIds.includes(recordId)) recordIds.push(recordId);
-    });
+  const recordIds = explicitId ? [explicitId] : [];
+  let matchResult = { records: [], matchMode: explicitId ? 'explicit_record_id' : 'none', baseCount: 0 };
+  if (!explicitId) {
+    const records = await listBitableRecords(appToken, tableId, token);
+    matchResult = findMarketingIdentityMatches(records, identity, tableFields);
+    matchResult.records
+      .forEach(record => {
+        const recordId = record.record_id || record.recordId || record.id || '';
+        if (recordId && !recordIds.includes(recordId)) recordIds.push(recordId);
+      });
+  }
 
   console.log('[feishu-marketing] delete identity matches', {
     accountName: identity.accountName,
     postedAt: identity.postedAt,
     device: identity.device,
     title: identity.title,
-    explicitRecordIdPresent: Boolean(explicitRecordId),
-    matchedCount: recordIds.length
+    explicitRecordIdPresent: Boolean(explicitId),
+    matchedCount: recordIds.length,
+    matchMode: matchResult.matchMode,
+    baseCount: matchResult.baseCount || 0
   });
 
-  if (!recordIds.length && explicitRecordId) recordIds.push(explicitRecordId);
   if (!recordIds.length) {
     return {
       data: { code: 0, msg: 'not found' },
       action: 'not_found',
       deletedCount: 0,
       recordIds: [],
-      identity
+      identity,
+      matchMode: matchResult.matchMode,
+      baseCount: matchResult.baseCount || 0
     };
   }
 
@@ -2496,9 +3068,20 @@ async function deleteMarketingBitableRecordByIdentity(appToken, tableId, fields,
     lastData = await deleteMarketingBitableRecord(appToken, tableId, recordId, token);
   }
 
+  if (explicitId) {
+    return {
+      data: lastData,
+      action: 'deleted',
+      deletedCount: recordIds.length,
+      recordIds,
+      identity,
+      matchMode: matchResult.matchMode
+    };
+  }
+
   await wait(500);
   const recordsAfterDelete = await listBitableRecords(appToken, tableId, token);
-  const remainingRecords = recordsAfterDelete.filter(record => isSameMarketingIdentity(record?.fields || {}, identity, tableFields));
+  const remainingRecords = findMarketingIdentityMatches(recordsAfterDelete, identity, tableFields).records;
   if (remainingRecords.length) {
     const remainingRecordIds = remainingRecords
       .map(record => record.record_id || record.recordId || record.id || '')
@@ -2569,7 +3152,7 @@ async function handleAccountsList(body) {
       statusCode: error.status || 500,
       payload: {
         ok: false,
-        message: error.message || 'Failed to list Feishu accounts',
+        message: error.message || '读取飞书账号表失败',
         details: error.details || null
       }
     };
@@ -2600,7 +3183,7 @@ async function handleAccountCreate(body) {
       statusCode: error.status || 500,
       payload: {
         ok: false,
-        message: error.message || 'Failed to create Feishu account',
+        message: error.message || '同步新增飞书账号失败',
         details: error.details || null
       }
     };
@@ -2630,7 +3213,7 @@ async function handleAccountUpdate(body) {
       statusCode: error.status || 500,
       payload: {
         ok: false,
-        message: error.message || 'Failed to update Feishu account',
+        message: error.message || '同步更新飞书账号失败',
         details: error.details || null
       }
     };
@@ -2660,7 +3243,7 @@ async function handleDailyReportUpsert(body) {
       statusCode: error.status || 500,
       payload: {
         ok: false,
-        message: error.message || 'Failed to upsert daily report',
+        message: error.message || '同步飞书日报失败',
         details: error.details || null
       }
     };
@@ -2688,7 +3271,7 @@ async function handleDailyReportCheck(body) {
       statusCode: error.status || 500,
       payload: {
         ok: false,
-        message: error.message || 'Failed to check daily report',
+        message: error.message || '检查飞书日报失败',
         details: error.details || null
       }
     };
@@ -2708,6 +3291,7 @@ async function handlePublishRecordCreate(body) {
         action: result.action,
         recordId: result.recordId,
         updatedCount: result.updatedCount || 0,
+        matchMode: result.matchMode || '',
         code: result.data.code,
         msg: result.data.msg || result.data.message || ''
       }
@@ -2813,15 +3397,19 @@ async function handleDraftCreate(body) {
   try {
     const { appToken, tableId, fields } = validateDraftCreatePayload(body);
     const token = await getTenantAccessToken();
-    const data = await createDraftBitableRecord(appToken, tableId, fields, token);
+    const result = await createDraftBitableRecord(appToken, tableId, fields, token);
+    const data = result.data || {};
 
     return {
       statusCode: 200,
       payload: {
         ok: true,
-        recordId: data?.data?.record?.record_id || data?.data?.record_id || '',
+        recordId: result.recordId || getBitableRecordId(data),
         code: data.code,
-        msg: data.msg || data.message || ''
+        msg: data.msg || data.message || '',
+        action: result.action || 'created',
+        updatedCount: result.updatedCount || 0,
+        matchMode: result.matchMode || ''
       }
     };
   } catch (error) {
@@ -2867,15 +3455,19 @@ async function handleMarketingRecordCreate(body) {
   try {
     const { appToken, tableId, fields } = validateMarketingRecordCreatePayload(body);
     const token = await getTenantAccessToken();
-    const data = await createMarketingBitableRecord(appToken, tableId, fields, token);
+    const result = await createMarketingBitableRecord(appToken, tableId, fields, token);
+    const data = result.data || {};
 
     return {
       statusCode: 200,
       payload: {
         ok: true,
-        recordId: data?.data?.record?.record_id || data?.data?.record_id || '',
+        recordId: result.recordId || getBitableRecordId(data),
         code: data.code,
-        msg: data.msg || data.message || ''
+        msg: data.msg || data.message || '',
+        action: result.action || 'created',
+        updatedCount: result.updatedCount || 0,
+        matchMode: result.matchMode || ''
       }
     };
   } catch (error) {
@@ -2959,31 +3551,44 @@ async function handleMarketingRecordDelete(body) {
 function formatPublishRecordErrorMessage(error) {
   const code = Number(error?.details?.code || 0);
   const msg = String(error?.details?.msg || error?.message || '').trim();
+  const identityMessage = describePublishIdentityMatchFailure(error?.details || {});
+  if (identityMessage) return identityMessage;
+  if (code === 1254064 || /DatetimeFieldConvFail/i.test(msg)) {
+    return '飞书日期字段格式不匹配：请重新测试飞书连接确认日期字段类型，系统会自动把日期时间转为飞书需要的时间戳';
+  }
   if (code === 91403 || /forbidden/i.test(msg)) {
     return '飞书权限不足：当前应用可以读取表信息，但没有新增发布记录权限，请给应用开通多维表格写入/新增记录权限，并确认应用已安装且有该表访问权限';
   }
   if (code) return `飞书返回 ${code}：${msg || '写入失败'}`;
-  return error.message || 'Failed to create Feishu publish record';
+  return error.message || '飞书发布记录同步失败';
 }
 
 function formatDraftCreateErrorMessage(error) {
   const code = Number(error?.details?.code || 0);
   const msg = String(error?.details?.msg || error?.message || '').trim();
-  if (code === 91403 || /forbidden/i.test(msg)) {
-    return 'Feishu draft table permission denied: the app can read table info but cannot create draft records';
+  if (code === 1254064 || /DatetimeFieldConvFail/i.test(msg)) {
+    return '飞书文案库日期字段格式不匹配：请重新测试飞书连接确认日期字段类型，系统会自动把日期时间转为飞书需要的时间戳';
   }
-  if (code) return `Feishu returned ${code}: ${msg || 'draft create failed'}`;
-  return error.message || 'Failed to create Feishu draft';
+  if (code === 91403 || /forbidden/i.test(msg)) {
+    return '飞书文案库权限不足：当前应用可以读取表信息，但没有新增或更新文案记录权限，请给应用开通多维表格写入/新增记录权限，并确认应用已安装且有该表访问权限';
+  }
+  if (code) return `飞书返回 ${code}：${msg || '文案库同步失败'}`;
+  return error.message || '飞书文案库同步失败';
 }
 
 function formatMarketingRecordErrorMessage(error, action) {
   const code = Number(error?.details?.code || 0);
   const msg = String(error?.details?.msg || error?.message || '').trim();
-  if (code === 91403 || /forbidden/i.test(msg)) {
-    return `Feishu marketing table permission denied: cannot ${action || 'write'} marketing records`;
+  const identityMessage = describeMarketingIdentityMatchFailure(error?.details || {});
+  if (identityMessage) return identityMessage;
+  if (code === 1254064 || /DatetimeFieldConvFail/i.test(msg)) {
+    return '飞书营销记录日期字段格式不匹配：请重新测试飞书连接确认日期字段类型，系统会自动把日期时间转为飞书需要的时间戳';
   }
-  if (code) return `Feishu returned ${code}: ${msg || 'marketing record sync failed'}`;
-  return error.message || 'Failed to sync Feishu marketing record';
+  if (code === 91403 || /forbidden/i.test(msg)) {
+    return `飞书营销记录表权限不足：当前应用无法${action || '写入'}营销记录，请给应用开通多维表格写入/新增/更新/删除记录权限，并确认应用已安装且有该表访问权限`;
+  }
+  if (code) return `飞书返回 ${code}：${msg || '营销记录同步失败'}`;
+  return error.message || '飞书营销记录同步失败';
 }
 
 async function handleDebugNetwork(appToken) {
@@ -3022,7 +3627,7 @@ async function handleDebugNetwork(appToken) {
       result.ok = false;
       result.checks.bitableTables = {
         ok: false,
-        message: 'Missing appToken query parameter'
+        message: '缺少 appToken 查询参数'
       };
       return result;
     }
@@ -3095,6 +3700,11 @@ function healthPayload() {
   return {
     ok: true,
     service: 'feishu-local-sync',
+    nodeVersion: process.version,
+    port: PORT,
+    requestTimeoutMs: REQUEST_TIMEOUT_MS,
+    localServerRequestTimeoutMs: server.requestTimeout,
+    localServerHeadersTimeoutMs: server.headersTimeout,
     hasAppId: Boolean(process.env.FEISHU_APP_ID),
     hasAppSecret: Boolean(process.env.FEISHU_APP_SECRET)
   };
@@ -3106,13 +3716,29 @@ async function handleFeishuTest(body) {
     const token = await getTenantAccessToken();
     const actualTables = await listFeishuTables(appToken, token);
     const tableResults = matchRequiredTables(tableIds, actualTables);
+    const fieldAudits = await auditFeishuTableFields(tableResults, appToken, token);
+    console.log('[feishu-test] field audit summary', Object.entries(fieldAudits).map(([role, audit]) => ({
+      role,
+      tableId: audit.tableId || '',
+      tableName: audit.name || '',
+      status: audit.status || '',
+      missingRequired: audit.missingRequired || [],
+      missingRecommended: audit.missingRecommended || [],
+      missingOptional: audit.missingOptional || [],
+      fieldCount: audit.fieldCount || 0
+    })));
 
     return {
       statusCode: 200,
       payload: {
-      ok: true,
-      message: 'Feishu connection test passed',
-      tables: tableResults
+        ok: true,
+        message: '飞书连接测试通过',
+        tables: tableResults,
+        fieldAudits,
+        actualTables: actualTables.map(item => ({
+          tableId: item.tableId,
+          name: item.name
+        }))
       }
     };
   } catch (error) {
@@ -3120,7 +3746,7 @@ async function handleFeishuTest(body) {
       statusCode: error.status || 500,
       payload: {
         ok: false,
-        message: error.message || 'Feishu connection test failed',
+        message: error.message || '飞书连接测试失败',
         details: error.details || null
       }
     };
@@ -3159,7 +3785,7 @@ const server = http.createServer(async (req, res) => {
     } catch (error) {
       sendJson(res, 400, {
         ok: false,
-        message: error.message || 'Failed to build education question prompt'
+        message: error.message || '生成教育提问提示词失败'
       });
     }
     return;
@@ -3186,18 +3812,19 @@ const server = http.createServer(async (req, res) => {
           accounts: Boolean(tables.accounts),
           publish: Boolean(tables.publish),
           drafts: Boolean(tables.drafts),
-          marketing: Boolean(tables.marketing)
+          marketing: Boolean(tables.marketing),
+          reports: Boolean(tables.reports)
         }
       });
       const result = await handleFeishuTest(body);
       sendJson(res, result.statusCode, result.payload);
     } catch (error) {
       console.log('feishu test request failed before validation', {
-        message: error.message || 'Invalid request'
+        message: error.message || '请求格式无效'
       });
       sendJson(res, 400, {
         ok: false,
-        message: error.message || 'Invalid request'
+        message: error.message || '请求格式无效'
       });
     }
     return;
@@ -3220,11 +3847,11 @@ const server = http.createServer(async (req, res) => {
       sendJson(res, result.statusCode, result.payload);
     } catch (error) {
       console.log('accounts list request failed before validation', {
-        message: error.message || 'Invalid request'
+        message: error.message || '请求格式无效'
       });
       sendJson(res, 400, {
         ok: false,
-        message: error.message || 'Invalid request'
+        message: error.message || '请求格式无效'
       });
     }
     return;
@@ -3252,11 +3879,11 @@ const server = http.createServer(async (req, res) => {
       sendJson(res, result.statusCode, result.payload);
     } catch (error) {
       console.log('account create request failed before validation', {
-        message: error.message || 'Invalid request'
+        message: error.message || '请求格式无效'
       });
       sendJson(res, 400, {
         ok: false,
-        message: error.message || 'Invalid request'
+        message: error.message || '请求格式无效'
       });
     }
     return;
@@ -3285,11 +3912,11 @@ const server = http.createServer(async (req, res) => {
       sendJson(res, result.statusCode, result.payload);
     } catch (error) {
       console.log('account update request failed before validation', {
-        message: error.message || 'Invalid request'
+        message: error.message || '请求格式无效'
       });
       sendJson(res, 400, {
         ok: false,
-        message: error.message || 'Invalid request'
+        message: error.message || '请求格式无效'
       });
     }
     return;
@@ -3317,11 +3944,11 @@ const server = http.createServer(async (req, res) => {
       sendJson(res, result.statusCode, result.payload);
     } catch (error) {
       console.log('daily report upsert request failed before validation', {
-        message: error.message || 'Invalid request'
+        message: error.message || '请求格式无效'
       });
       sendJson(res, 400, {
         ok: false,
-        message: error.message || 'Invalid request'
+        message: error.message || '请求格式无效'
       });
     }
     return;
@@ -3348,11 +3975,11 @@ const server = http.createServer(async (req, res) => {
       sendJson(res, result.statusCode, result.payload);
     } catch (error) {
       console.log('daily report check request failed before validation', {
-        message: error.message || 'Invalid request'
+        message: error.message || '请求格式无效'
       });
       sendJson(res, 400, {
         ok: false,
-        message: error.message || 'Invalid request'
+        message: error.message || '请求格式无效'
       });
     }
     return;
@@ -3380,11 +4007,11 @@ const server = http.createServer(async (req, res) => {
       sendJson(res, result.statusCode, result.payload);
     } catch (error) {
       console.log('publish record upsert request failed before validation', {
-        message: error.message || 'Invalid request'
+        message: error.message || '请求格式无效'
       });
       sendJson(res, 400, {
         ok: false,
-        message: error.message || 'Invalid request'
+        message: error.message || '请求格式无效'
       });
     }
     return;
@@ -3413,11 +4040,11 @@ const server = http.createServer(async (req, res) => {
       sendJson(res, result.statusCode, result.payload);
     } catch (error) {
       console.log('publish record delete request failed before validation', {
-        message: error.message || 'Invalid request'
+        message: error.message || '请求格式无效'
       });
       sendJson(res, 400, {
         ok: false,
-        message: error.message || 'Invalid request'
+        message: error.message || '请求格式无效'
       });
     }
     return;
@@ -3439,11 +4066,11 @@ const server = http.createServer(async (req, res) => {
       sendJson(res, result.statusCode, result.payload);
     } catch (error) {
       console.log('publish duplicate preview request failed before validation', {
-        message: error.message || 'Invalid request'
+        message: error.message || '请求格式无效'
       });
       sendJson(res, 400, {
         ok: false,
-        message: error.message || 'Invalid request'
+        message: error.message || '请求格式无效'
       });
     }
     return;
@@ -3465,11 +4092,11 @@ const server = http.createServer(async (req, res) => {
       sendJson(res, result.statusCode, result.payload);
     } catch (error) {
       console.log('publish duplicate suggestions request failed before validation', {
-        message: error.message || 'Invalid request'
+        message: error.message || '请求格式无效'
       });
       sendJson(res, 400, {
         ok: false,
-        message: error.message || 'Invalid request'
+        message: error.message || '请求格式无效'
       });
     }
     return;
@@ -3494,11 +4121,11 @@ const server = http.createServer(async (req, res) => {
       sendJson(res, result.statusCode, result.payload);
     } catch (error) {
       console.log('draft create request failed before validation', {
-        message: error.message || 'Invalid request'
+        message: error.message || '请求格式无效'
       });
       sendJson(res, 400, {
         ok: false,
-        message: error.message || 'Invalid request'
+        message: error.message || '请求格式无效'
       });
     }
     return;
@@ -3521,11 +4148,11 @@ const server = http.createServer(async (req, res) => {
       sendJson(res, result.statusCode, result.payload);
     } catch (error) {
       console.log('draft delete request failed before validation', {
-        message: error.message || 'Invalid request'
+        message: error.message || '请求格式无效'
       });
       sendJson(res, 400, {
         ok: false,
-        message: error.message || 'Invalid request'
+        message: error.message || '请求格式无效'
       });
     }
     return;
@@ -3551,11 +4178,11 @@ const server = http.createServer(async (req, res) => {
       sendJson(res, result.statusCode, result.payload);
     } catch (error) {
       console.log('marketing record create request failed before validation', {
-        message: error.message || 'Invalid request'
+        message: error.message || '请求格式无效'
       });
       sendJson(res, 400, {
         ok: false,
-        message: error.message || 'Invalid request'
+        message: error.message || '请求格式无效'
       });
     }
     return;
@@ -3581,11 +4208,11 @@ const server = http.createServer(async (req, res) => {
       sendJson(res, result.statusCode, result.payload);
     } catch (error) {
       console.log('marketing record update request failed before validation', {
-        message: error.message || 'Invalid request'
+        message: error.message || '请求格式无效'
       });
       sendJson(res, 400, {
         ok: false,
-        message: error.message || 'Invalid request'
+        message: error.message || '请求格式无效'
       });
     }
     return;
@@ -3614,11 +4241,11 @@ const server = http.createServer(async (req, res) => {
       sendJson(res, result.statusCode, result.payload);
     } catch (error) {
       console.log('marketing record delete request failed before validation', {
-        message: error.message || 'Invalid request'
+        message: error.message || '请求格式无效'
       });
       sendJson(res, 400, {
         ok: false,
-        message: error.message || 'Invalid request'
+        message: error.message || '请求格式无效'
       });
     }
     return;
